@@ -10,16 +10,16 @@ import hashlib
 @pytest.fixture(scope="module")
 def nodes():
     # Initialize nodes
-    worker = WorkerThread(Queue(), Queue(), on_chain=True, local_test=True, upnp=False)
-    user = UserThread(Queue(), Queue(), on_chain=True, local_test=True, upnp=False)
+    worker = WorkerThread(Queue(), Queue(), on_chain=False, local_test=True, upnp=False)
+    user = UserThread(Queue(), Queue(), on_chain=False, local_test=True, upnp=False)
     validator = ValidatorThread(
         Queue(),
         Queue(),
-        on_chain=True,
+        on_chain=False,
         local_test=True,
         upnp=False,
         endpoint=False,
-    )  # Must turn off endpoint for pytest
+    )
 
     # Start nodes
     worker.start()
