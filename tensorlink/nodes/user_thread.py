@@ -19,7 +19,7 @@ class UserThread(Torchnode):
         print_level=logging.DEBUG,
         max_connections: int = 0,
         upnp=True,
-        off_chain_test=False,
+        on_chain=False,
         local_test=False,
         priority_nodes: list = None,
         seed_validators: list = None,
@@ -30,7 +30,7 @@ class UserThread(Torchnode):
             "U",
             max_connections=max_connections,
             upnp=upnp,
-            off_chain_test=off_chain_test,
+            on_chain=on_chain,
             local_test=local_test,
             priority_nodes=priority_nodes,
             seed_validators=seed_validators,
@@ -68,7 +68,7 @@ class UserThread(Torchnode):
         #     ):
         #         time.sleep(5)
 
-        if self.off_chain_test is False:
+        if self.on_chain:
             self.public_key = get_key(".tensorlink.env", "PUBLIC_KEY")
             if not self.public_key:
                 self.debug_print(

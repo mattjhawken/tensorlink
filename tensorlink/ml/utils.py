@@ -326,6 +326,47 @@ def handle_output(tensor):
     raise ValueError("Unsupported output format: could not find a tensor.")
 
 
+def replace_output_with_custom_grad(combined_output, custom_grad_output):
+    """
+    Replace the main output tensor (logits, last_hidden_state, etc.) in the combined_output
+    with the custom_grad_output, preserving structure and returning a ModelOutput when possible.
+    """
+    # If the combined output is already a tensor
+    if isinstance(combined_output, torch.Tensor):
+        return custom_grad_output
+
+    # Handle ModelOutput subclasses (SequenceClassifierOutput, etc.)
+    if isinstance(combined_output, ModelOutput):
+        data = combined_output.to_dict()
+        if "logits" in data:
+            data["logits"] = custom_grad_output
+        elif "last_hidden_state" in data:
+            data["last_hidden_state"] = custom_grad_output
+        else:
+            for k, v in data.items():
+                if isinstance(v, torch.Tensor):
+                    data[k] = custom_grad_output
+                    break
+        return combined_output.__class__(**data)
+
+    # Handle dict outputs
+    if isinstance(combined_output, dict):
+        new_output = dict(combined_output)
+        if "logits" in new_output:
+            new_output["logits"] = custom_grad_output
+        elif "last_hidden_state" in new_output:
+            new_output["last_hidden_state"] = custom_grad_output
+        else:
+            for k, v in new_output.items():
+                if isinstance(v, torch.Tensor):
+                    new_output[k] = custom_grad_output
+                    break
+        # Wrap dict in a generic ModelOutput for consistency
+        return ModelOutput(**new_output)
+
+    raise TypeError(f"Unsupported output type: {type(combined_output)}")
+
+
 def combine_micro_batches(micro_batches):
     """
     Combines the micro-batch outputs into a single output.
@@ -387,78 +428,49 @@ def combine_micro_batches(micro_batches):
         raise TypeError("Unsupported output type")
 
 
-def replace_output_with_custom_grad(combined_output, custom_grad_output):
+def split_micro_batches(inputs, n_chunks):
     """
-    Replace the main output tensor (logits, last_hidden_state, etc.) in the combined_output
-    with the custom_grad_output, preserving structure and returning a ModelOutput when possible.
+    Safely chunks inputs into n_chunks.
+    - Tensors and ModelOutput are split along batch dim.
+    - Dicts are split recursively.
+    - Scalars (bool, None, int, float, str) are passed through to each chunk.
     """
-    # If the combined output is already a tensor
-    if isinstance(combined_output, torch.Tensor):
-        return custom_grad_output
+    if isinstance(inputs, torch.Tensor):
+        return torch.chunk(inputs, n_chunks)
 
-    # Handle ModelOutput subclasses (SequenceClassifierOutput, etc.)
-    if isinstance(combined_output, ModelOutput):
-        data = combined_output.to_dict()
-        if "logits" in data:
-            data["logits"] = custom_grad_output
-        elif "last_hidden_state" in data:
-            data["last_hidden_state"] = custom_grad_output
-        else:
-            for k, v in data.items():
-                if isinstance(v, torch.Tensor):
-                    data[k] = custom_grad_output
-                    break
-        return combined_output.__class__(**data)
-
-    # Handle dict outputs
-    if isinstance(combined_output, dict):
-        new_output = dict(combined_output)
-        if "logits" in new_output:
-            new_output["logits"] = custom_grad_output
-        elif "last_hidden_state" in new_output:
-            new_output["last_hidden_state"] = custom_grad_output
-        else:
-            for k, v in new_output.items():
-                if isinstance(v, torch.Tensor):
-                    new_output[k] = custom_grad_output
-                    break
-        # Wrap dict in a generic ModelOutput for consistency
-        return ModelOutput(**new_output)
-
-    raise TypeError(f"Unsupported output type: {type(combined_output)}")
-
-
-def split_into_micro_batches(combined_output, n_micro_batch):
-    """
-    Splits the combined output back into individual micro-batches.
-    """
-    if isinstance(combined_output, torch.Tensor):
-        # Split the tensor along the batch dimension
-        return torch.chunk(combined_output, n_micro_batch, dim=0)
-
-    elif isinstance(combined_output, ModelOutput):
-        micro_batches = [defaultdict(list) for _ in range(n_micro_batch)]
-
-        # Iterate over each key-value pair in the combined output
-        for key, value in combined_output.items():
+    elif isinstance(inputs, ModelOutput):
+        chunked_outputs = [defaultdict(list) for _ in range(n_chunks)]
+        for key, value in inputs.items():
             if isinstance(value, torch.Tensor):
-                # Split the tensor along the batch dimension
-                split_values = torch.chunk(value, n_micro_batch, dim=0)
-
-                # Assign each split to the corresponding micro-batch
-                for i, split_value in enumerate(split_values):
-                    micro_batches[i][key] = split_value
-
+                value_chunks = torch.chunk(value, n_chunks)
+                for i in range(n_chunks):
+                    chunked_outputs[i][key] = value_chunks[i]
             else:
-                # Distribute non-tensor values as they are
-                for i in range(n_micro_batch):
-                    micro_batches[i][key] = value
+                # Non-tensor fields are replicated across chunks
+                for i in range(n_chunks):
+                    chunked_outputs[i][key] = value
+        return [type(inputs)(**dict(chunk)) for chunk in chunked_outputs]
 
-        # Convert each dictionary back into a ModelOutput
-        return [type(combined_output)(**batch) for batch in micro_batches]
+    elif isinstance(inputs, dict):
+        chunked_dicts = [{} for _ in range(n_chunks)]
+        for key, value in inputs.items():
+            # Recursively chunk if possible, otherwise replicate
+            try:
+                value_chunks = split_micro_batches(value, n_chunks)
+                # If value_chunks is not iterable (scalar), replicate
+                if not hasattr(value_chunks, "__getitem__"):
+                    value_chunks = [value] * n_chunks
+            except Exception:
+                value_chunks = [value] * n_chunks
+
+            for i in range(n_chunks):
+                chunked_dicts[i][key] = value_chunks[i]
+
+        return chunked_dicts
 
     else:
-        raise TypeError("Unsupported output type")
+        # Scalars, None, bools, strings, etc. just get replicated
+        return [inputs] * n_chunks
 
 
 def get_batch_size(inputs):
@@ -474,48 +486,6 @@ def get_batch_size(inputs):
                 return value.size(0)
     else:
         raise ValueError("Unsupported input type")
-
-
-def chunk(inputs, chunks):
-    """
-    Chunks the inputs into the specified number of chunks.
-    Handles both tensor and ModelOutput types.
-    """
-
-    if isinstance(inputs, torch.Tensor):
-        return torch.chunk(inputs, chunks)
-
-    elif isinstance(inputs, ModelOutput):
-        chunked_outputs = []
-        for i in range(chunks):
-            chunked_outputs.append({})
-
-        for key, value in inputs.items():
-            if isinstance(value, torch.Tensor):
-                value_chunks = torch.chunk(value, chunks)
-                for i in range(chunks):
-                    chunked_outputs[i][key] = value_chunks[i]
-
-        return [ModelOutput(**chunk) for chunk in chunked_outputs]
-
-    elif isinstance(inputs, dict):
-        chunked_dicts = [{} for _ in range(chunks)]
-
-        for key, value in inputs.items():
-            value_chunks = chunk(value, chunks)
-
-            if value is None:
-                for i in range(chunks):
-                    chunked_dicts[i][key] = None
-            else:
-                value_chunks = chunk(value, chunks)
-                for i in range(chunks):
-                    chunked_dicts[i][key] = value_chunks[i]
-
-        return chunked_dicts
-
-    else:
-        return inputs
 
 
 def tensor_to_bytes(tensor):
@@ -623,9 +593,15 @@ def tensor_to_bytes(tensor):
         elif isinstance(obj, dict):
             return {k: _serialize(v) for k, v in obj.items()}
 
-        elif isinstance(obj, (list, tuple)):
-            obj_type = list if isinstance(obj, list) else tuple
-            return obj_type([_serialize(v) for v in obj])
+        elif isinstance(obj, list):
+            return [_serialize(v) for v in obj]
+
+        elif isinstance(obj, tuple):
+            return {
+                "__serialized__": True,
+                "type": "tuple",
+                "data": [_serialize(v) for v in obj],
+            }
 
         # Handle other objects by trying to extract their __dict__
         elif hasattr(obj, "__dict__"):
@@ -662,6 +638,13 @@ def bytes_to_tensor(tensor_data):
 
         if isinstance(obj, list):
             return [_deserialize(v) for v in obj]
+
+        if (
+            isinstance(obj, dict)
+            and obj.get("__serialized__")
+            and obj.get("type") == "tuple"
+        ):
+            return tuple(_deserialize(v) for v in obj["data"])
 
         if isinstance(obj, dict):
             # Special handling for tokenizer metadata

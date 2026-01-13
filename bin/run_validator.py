@@ -44,7 +44,6 @@ def main():
     root_dir = get_root_dir()
     env_path = os.path.join(root_dir, ".tensorlink.env")
 
-    # Load config if needed
     config = load_config(os.path.join(root_dir, "config.json"))
     network_config = config["network"]
     crypto_config = config["crypto"]
@@ -53,22 +52,31 @@ def main():
     check_env_file(env_path, config)
 
     trusted = ml_config.get("trusted", False)
-    local = network_config.get("local", False)
-    upnp = True
-    if local == "true":
-        upnp = False
+    mode = network_config.get("mode", "private")
 
-    priority_nodes = network_config["priority_nodes"]
-    seed_validators = crypto_config["seed_validators"]
+    # Defaults
+    local = False
+    upnp = True
+    on_chain = False
+
+    if mode == "local":
+        local = True
+        upnp = False
+    elif mode == "public":
+        on_chain = True
+    elif mode == "private":
+        pass
+    else:
+        raise ValueError(f"Unknown network mode: {mode}")
 
     validator = Validator(
         config=ValidatorConfig(
             upnp=upnp,
             local_test=local,
-            off_chain_test=local,
+            on_chain=on_chain,
             print_level=logging.DEBUG,
-            priority_nodes=priority_nodes,
-            seed_validators=seed_validators,
+            priority_nodes=network_config.get("priority_nodes", []),
+            seed_validators=crypto_config.get("seed_validators", []),
         ),
         trusted=trusted,
     )

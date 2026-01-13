@@ -1,8 +1,8 @@
 {
   "config": {
     "network": {
+      "mode": "public",
       "endpoint": false,
-      "local": false,
       "priority_nodes": []
     },
     "crypto": {

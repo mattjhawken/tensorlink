@@ -1,13 +1,12 @@
 """
-test_local_dist_train.py
+test_distributed_model.py
 
-This script tests distributed machine learning using Tensorlink's P2P network using local nodes on different
-processes. It simulates a local environment with a user, worker, and validator node collaborating to train a
-simple model.
+This script tests distributed machine learning in PyTorch using Tensorlink's P2P network on
+local nodes. It simulates a local environment with a user, worker, and validator node collaborating
+to run a tiny Hugging Face model.
 """
 
 from tensorlink.ml import DistributedModel
-import torch.nn as nn
 import torch.optim as optim
 import torch
 
@@ -20,7 +19,10 @@ DP_FACTOR = 1
 
 
 def test_model_inference(connected_nodes):
-    """Test distributed training with a simple model."""
+    """
+    Test distributed inference with a simple model, ensures distributed forward and
+    generate functions work from torch requests.
+    """
     validator, user, worker, _ = connected_nodes
 
     model = "sshleifer/tiny-gpt2"
@@ -32,7 +34,10 @@ def test_model_inference(connected_nodes):
 
 
 def test_model_training(connected_nodes):
-    """Test distributed training setup with a tiny encoder model."""
+    """
+    Test distributed training setup with a tiny encoder model. Ensures backward pass
+    and distributed optimizer functions work.
+    """
     validator, user, worker, _ = connected_nodes
 
     model_name = "sshleifer/tiny-gpt2"
@@ -66,3 +71,11 @@ def test_model_training(connected_nodes):
     )
 
     loss.backward()
+
+
+def test_multiple_models(connected_nodes):
+    """
+    Test a few tiny models that will require different distributed configs (i.e., single offloaded model and
+    multiple offloaded modules)
+    """
+    pass

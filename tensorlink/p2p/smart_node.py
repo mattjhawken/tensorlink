@@ -207,7 +207,7 @@ class Smartnode(threading.Thread):
         role,
         max_connections: int = 0,
         upnp: bool = True,
-        off_chain_test: bool = False,
+        on_chain: bool = False,
         local_test: bool = False,
         debug_colour=None,
         priority_nodes: list = None,
@@ -266,12 +266,11 @@ class Smartnode(threading.Thread):
             name: Web3.keccak(text=sig).hex()
             for name, sig in SNO_EVENT_SIGNATURES.items()
         }
-        self.off_chain_test = off_chain_test
+        self.on_chain = on_chain
         self.local_test = local_test
 
         if local_test:
             self.upnp = False
-            self.off_chain_test = True
 
         self.public_key = None
 
@@ -285,7 +284,7 @@ class Smartnode(threading.Thread):
 
         self._priority_nodes = priority_nodes
         self._seed_validators = seed_validators
-        if self.off_chain_test is False:
+        if self.on_chain:
             # Smart nodes parameters for additional security and contract connectivity
             self.url = CHAIN_URL
             self.chain = Web3(Web3.HTTPProvider(CHAIN_URL))
@@ -681,7 +680,7 @@ class Smartnode(threading.Thread):
         """Perform comprehensive credential validation"""
 
         # Check node reputation from validator nodes
-        if len(self.nodes) > 0 and self.off_chain_test is False:
+        if len(self.nodes) > 0 and self.on_chain:
             dht_info = self.dht.query(
                 node_info['node_id_hash'], keys_to_exclude=[node_info['node_id_hash']]
             )
@@ -717,7 +716,7 @@ class Smartnode(threading.Thread):
         self, node_info: dict, connection: socket.socket
     ) -> bool:
         """Validate node credentials against on-chain information"""
-        if self.off_chain_test:
+        if not self.on_chain:
             return True
 
         try:
@@ -1092,9 +1091,9 @@ class Smartnode(threading.Thread):
         Returns:
             bool: True if the handshake and connection succeed, False otherwise.
         """
-        # Validate id_hash requirement based on off_chain_test setting
-        if not self.off_chain_test and id_hash is None:
-            raise ValueError("id_hash is required when off_chain_test is False")
+        # Validate id_hash requirement based on on_chain setting
+        if self.on_chain and id_hash is None:
+            raise ValueError("id_hash is required when on_chain is True")
 
         if id_hash is not None and isinstance(id_hash, bytes):
             id_hash = id_hash.decode()
@@ -1175,11 +1174,8 @@ class Smartnode(threading.Thread):
         Bootstrap node to priority nodes. These are specified in the user's config.json file
         or as direct kwargs to the node.
         """
-        if self.off_chain_test is True:
-            return
-
         # Connect with some seed nodes from config file
-        if not self.off_chain_test and not self.local_test:
+        if self.on_chain and not self.local_test:
             self.debug_print("Bootstrapping to public network...", tag="Smartnode")
             for seed_validator in self._seed_validators:
                 host, port, id_hash = seed_validator

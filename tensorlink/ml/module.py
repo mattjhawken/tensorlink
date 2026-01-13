@@ -33,10 +33,9 @@ from tensorlink.ml.graphing import ModelParser
 from tensorlink.ml.utils import (
     get_gpu_memory,
     get_batch_size,
-    chunk,
     handle_output,
     combine_micro_batches,
-    split_into_micro_batches,
+    split_micro_batches,
     replace_output_with_custom_grad,
     access_module,
     detach_tensor,
@@ -46,6 +45,7 @@ from tensorlink.ml.utils import (
     get_nested_module,
     get_optimizer_from_spec,
     optimizer_to_spec,
+    handle_output,
 )
 from tensorlink.nodes.shared_memory import (
     get_from_shared_memory,
@@ -134,7 +134,7 @@ def _create_user_node():
 
     node = User(
         config=UserConfig(
-            upnp=True, off_chain_test=False, local_test=False, print_level=logging.INFO
+            upnp=True, on_chain=True, local_test=False, print_level=logging.INFO
         )
     )
 
@@ -252,7 +252,10 @@ class DistributedModel(nn.Module):
         - Splits input into micro-batches and runs them in parallel.
         - Creates multiple parallel streams of workers for model parallel acceleration
         """
-        if isinstance(args, tuple) and len(args) == 1:
+        if not args and "input_ids" in kwargs:
+            args = kwargs.pop("input_ids")
+
+        elif isinstance(args, tuple) and len(args) == 1:
             args = args[0]
 
         batch_size = get_batch_size(args)
@@ -266,8 +269,8 @@ class DistributedModel(nn.Module):
         ), "Minibatch size must be divisible by n_pipelines!"
 
         # Split the input tensor and kwargs into micro-batches
-        micro_batch_args = chunk(args, self.n_pipelines)
-        micro_batch_kwargs = chunk(kwargs, self.n_pipelines)
+        micro_batch_args = split_micro_batches(args, self.n_pipelines)
+        micro_batch_kwargs = split_micro_batches(kwargs, self.n_pipelines)
 
         # Create queues for forward and backward passes
         self.model.forward_queues = {m: queue.Queue() for m in range(self.n_pipelines)}
@@ -314,7 +317,7 @@ class DistributedModel(nn.Module):
             micro_losses = loss.micro_loss
         else:
             # Split the combined loss into micro-batch-specific losses
-            micro_losses = split_into_micro_batches(loss, self.n_pipelines)
+            micro_losses = split_micro_batches(loss, self.n_pipelines)
 
         threads = []
         for micro in range(self.n_pipelines):
@@ -638,18 +641,52 @@ class DistributedModel(nn.Module):
         ]  # Queue to hold intermediates, must be converted into dictionary
         # of queues if we wish to perform multiple epochs concurrently
 
-        return 0, 0
-
     def generate(self, *args, **kwargs):
-        """
-        Generate method.
-
-        Args:
-            *args: Input tensors
-            **kwargs: Additional generation parameters
-        """
+        if "streamer" in kwargs and isinstance(self.model, OffloadedModule):
+            return self._stream_generate(*args, **kwargs)
         with _set_micro(self._thread_local, 0):
             return self.model.generate(*args, **kwargs)
+
+    def _stream_generate(
+        self,
+        input_ids,
+        streamer=None,
+        max_new_tokens=50,
+        do_sample=False,
+        eos_token_id=None,
+        **kwargs,
+    ):
+        past = None
+        cur_ids = input_ids
+
+        for _ in range(max_new_tokens):
+            outputs = self.forward(
+                input_ids=cur_ids,
+                past_key_values=past,
+                use_cache=True,
+            )
+
+            logits = outputs.logits[:, -1]
+
+            next_token = (
+                torch.multinomial(torch.softmax(logits, -1), 1)
+                if do_sample
+                else torch.argmax(logits, -1, keepdim=True)
+            )
+
+            past = outputs.past_key_values
+            cur_ids = next_token
+
+            if streamer:
+                streamer.put(next_token)
+
+            if eos_token_id is not None and next_token.item() == eos_token_id:
+                break
+
+        if streamer:
+            streamer.end()
+
+        return cur_ids
 
     def wrap_module(self, module_id: list, worker_id):
         # Access the module and parent
@@ -952,6 +989,25 @@ class DistributedModel(nn.Module):
         if module_path_list[0] == "model" and not hasattr(self.model, "model"):
             module_path_list.pop(0)
 
+        # Special case: entire model
+        if not module_path_list:
+            logging.info(
+                "Module path refers to full model; loading directly into root model"
+            )
+
+            state_dict = self._load_module_weights(self.model_name, ["model"])
+
+            missing_keys, unexpected_keys = self.model.load_state_dict(
+                state_dict, strict=False
+            )
+
+            if missing_keys:
+                logging.warning(f"Model missing keys: {missing_keys}")
+            if unexpected_keys:
+                logging.warning(f"Model unexpected keys: {unexpected_keys}")
+
+            return
+
         # Navigate to parent
         for attr in module_path_list[:-1]:
             target = getattr(target, attr)
@@ -1036,19 +1092,28 @@ class DistributedModel(nn.Module):
                 logging.info("No safetensors found, trying .bin files")
                 bin_files = glob.glob(os.path.join(model_path, "pytorch_model*.bin"))
 
-                if bin_files:
-                    for bin_path in bin_files:
-                        shard_dict = torch.load(bin_path, map_location="cpu")
-
-                        for key, value in shard_dict.items():
-                            for module_path in module_paths:
-                                prefix = module_path + "."
-                                if key.startswith(prefix):
-                                    new_key = key[len(prefix) :]
-                                    state_dict[new_key] = value
-                                    break
-                else:
+                if not bin_files:
                     raise ValueError(f"No weight files found in {model_path}")
+
+                for bin_path in bin_files:
+                    shard_dict = torch.load(bin_path, map_location="cpu")
+
+                    # FULL MODEL LOAD (no filtering, no prefix stripping)
+                    if module_paths == ["model"]:
+                        logging.info(
+                            f"Loading full state_dict from {os.path.basename(bin_path)}"
+                        )
+                        state_dict.update(shard_dict)
+                        continue
+
+                    # PARTIAL MODULE LOAD
+                    for key, value in shard_dict.items():
+                        for module_path in module_paths:
+                            prefix = module_path + "."
+                            if key.startswith(prefix):
+                                new_key = key[len(prefix) :]
+                                state_dict[new_key] = value
+                                break
 
             logging.info(f"Loaded {len(state_dict)} weight tensors for host modules")
 
@@ -1156,8 +1221,6 @@ class OffloadedModule(nn.Module):
         return output
 
     def forward(self, *args, **kwargs):
-        from tensorlink.ml.utils import handle_output
-
         start_time = time.time()
         n_batch = self.parent_model.model.n_batch
         n_micro = getattr(self.parent_model._thread_local, "micro", None)

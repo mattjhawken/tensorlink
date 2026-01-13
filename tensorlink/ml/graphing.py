@@ -307,6 +307,9 @@ class ModelParser:
 
         indent = "  " * depth
 
+        # Root rule, host can never load entire model
+        is_root = module_path == "model"
+
         # Log current module being processed
         if self.verbose:
             print(f"{indent}Processing: {module_path}")
@@ -331,7 +334,8 @@ class ModelParser:
 
         # Local host small module logic
         if (
-            host_load_small
+            not is_root
+            and host_load_small
             and (memory / 1e6) <= host_threshold_mb
             and depth <= host_max_depth
         ):

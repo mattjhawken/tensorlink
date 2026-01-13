@@ -110,36 +110,48 @@ def _confirm_action():
 def main():
     root_dir = get_root_dir()
     env_path = os.path.join(root_dir, ".tensorlink.env")
+
     config = load_config(os.path.join(root_dir, "config.json"))
     create_env_file(env_path, config)
 
-    crypto_config = config.get("crypto")
-    network_config = config.get("network")
-    ml_config = config.get("ml")
+    crypto_config = config["crypto"]
+    network_config = config["network"]
+    ml_config = config["ml"]
 
-    mining_process = None
-    mining_script = crypto_config.get("mining-script")
-    use_sudo = True if os.geteuid() == 0 else False
-    local = network_config.get("local", False)
     trusted = ml_config.get("trusted", False)
+    mode = network_config.get("mode", "private")
+
+    # Network mode presets (keep in sync with validator)
+    MODE_PRESETS = {
+        "local": dict(local_test=True, upnp=False, on_chain=False),
+        "private": dict(local_test=False, upnp=True, on_chain=False),
+        "public": dict(local_test=False, upnp=True, on_chain=True),
+    }
+
+    try:
+        net_flags = MODE_PRESETS[mode]
+    except KeyError:
+        raise ValueError(f"Unknown network mode: {mode}")
+
     mining_enabled = crypto_config.get("mining", False)
-    upnp = not local
+    mining_script = crypto_config.get("mining-script")
+    use_sudo = os.geteuid() == 0
 
     if trusted:
         _confirm_action()
 
     worker = Worker(
         config=WorkerConfig(
-            upnp=upnp,
-            local_test=local,
-            off_chain_test=local,
+            **net_flags,
             print_level=logging.INFO,
-            priority_nodes=network_config.get("priority_nodes"),
-            seed_validators=crypto_config.get("seed_validators"),
+            priority_nodes=network_config.get("priority_nodes", []),
+            seed_validators=crypto_config.get("seed_validators", []),
         ),
         trusted=trusted,
         utilization=True,
     )
+
+    mining_process = None
 
     try:
         while True:
@@ -149,19 +161,17 @@ def main():
                         logging.info("Starting mining...")
                         mining_process = start_mining(mining_script, use_sudo)
 
-                        # Update shared state
                         worker.mining_active.value = True
                         time.sleep(2)
 
                         total_mem = cuda.get_device_properties(0).total_memory
-                        available = cuda.memory_reserved(0)
-                        worker.reserved_memory.value = total_mem - available
+                        reserved = cuda.memory_reserved(0)
+                        worker.reserved_memory.value = total_mem - reserved
                 else:
                     if mining_process and mining_process.poll() is None:
                         logging.info("Stopping mining...")
                         stop_mining(mining_process)
 
-                        # Clear shared state
                         worker.mining_active.value = False
                         worker.reserved_memory.value = 0.0
 

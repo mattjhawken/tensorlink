@@ -14,6 +14,7 @@ from tensorlink.nodes import (
 
 
 PRINT_LEVEL = logging.DEBUG
+ON_CHAIN = False
 LOCAL = True
 UPNP = False
 
@@ -27,7 +28,7 @@ def nodes():
     user = User(
         config=UserConfig(
             upnp=UPNP,
-            off_chain_test=LOCAL,
+            on_chain=ON_CHAIN,
             local_test=LOCAL,
             print_level=PRINT_LEVEL,
         )
@@ -37,17 +38,18 @@ def nodes():
     validator = Validator(
         config=ValidatorConfig(
             upnp=UPNP,
-            off_chain_test=LOCAL,
+            on_chain=ON_CHAIN,
             local_test=LOCAL,
             print_level=PRINT_LEVEL,
-            endpoint=False,
+            endpoint=True,
+            endpoint_ip="127.0.0.1",
         )
     )
     time.sleep(1)
 
     worker = Worker(
         config=WorkerConfig(
-            upnp=UPNP, off_chain_test=LOCAL, local_test=LOCAL, print_level=PRINT_LEVEL
+            upnp=UPNP, on_chain=ON_CHAIN, local_test=LOCAL, print_level=PRINT_LEVEL
         )
     )
     time.sleep(1)

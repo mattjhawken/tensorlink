@@ -27,7 +27,7 @@ class WorkerThread(Torchnode):
         print_level=logging.INFO,
         max_connections: int = 0,
         upnp=True,
-        off_chain_test=False,
+        on_chain=False,
         local_test=False,
         mining_active=None,
         reserved_memory=None,
@@ -41,7 +41,7 @@ class WorkerThread(Torchnode):
             "W" + duplicate,
             max_connections=max_connections,
             upnp=upnp,
-            off_chain_test=off_chain_test,
+            on_chain=on_chain,
             local_test=local_test,
             priority_nodes=priority_nodes,
             seed_validators=seed_validators,
@@ -65,7 +65,7 @@ class WorkerThread(Torchnode):
         self.mining_active = mining_active
         self.reserved_memory = reserved_memory
 
-        if self.off_chain_test is False:
+        if self.on_chain:
             self.public_key = get_key(".tensorlink.env", "PUBLIC_KEY")
             if not self.public_key:
                 self.debug_print(

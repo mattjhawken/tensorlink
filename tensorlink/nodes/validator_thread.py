@@ -27,7 +27,7 @@ class ValidatorThread(Torchnode):
         print_level=logging.DEBUG,
         max_connections: int = 0,
         upnp=True,
-        off_chain_test=False,
+        on_chain=False,
         local_test=False,
         endpoint=True,
         endpoint_ip="0.0.0.0",
@@ -41,7 +41,7 @@ class ValidatorThread(Torchnode):
             "V",
             max_connections=max_connections,
             upnp=upnp,
-            off_chain_test=off_chain_test,
+            on_chain=on_chain,
             local_test=local_test,
             priority_nodes=priority_nodes,
             seed_validators=seed_validators,
@@ -75,7 +75,7 @@ class ValidatorThread(Torchnode):
         self.latest_network_status_time = 0
         self.proposals = []
 
-        if off_chain_test is False:
+        if on_chain:
             # Ensure validator is activated on smartnodes first
             self.public_key = get_key(".tensorlink.env", "PUBLIC_KEY")
             if self.public_key is None:
@@ -118,7 +118,7 @@ class ValidatorThread(Torchnode):
                 self.add_port_mapping(64747, 64747)
 
         # Finally, load up previous saved state if any
-        if not off_chain_test or load_previous_state:
+        if on_chain or load_previous_state:
             self.keeper.load_previous_state()
 
     def handle_data(self, data, node: Connection):
@@ -848,7 +848,7 @@ class ValidatorThread(Torchnode):
     def run(self):
         super().run()
 
-        if self.off_chain_test is False:
+        if self.on_chain:
             time.sleep(15)
             self.execution_listener = threading.Thread(
                 target=self.contract_manager.proposal_creator, daemon=True

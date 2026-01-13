@@ -20,6 +20,8 @@ from transformers import (
     AutoModelForVision2Seq,
     AutoModelForSeq2SeqLM,
     AutoModelForSpeechSeq2Seq,
+    Cache,
+    DynamicCache,
 )
 from safetensors import safe_open
 from huggingface_hub import snapshot_download
@@ -94,6 +96,26 @@ def _create_layer_group_wrapper(
         loop_body_source=loop_body_source,
         loop_iterator_name=loop_iterator_name,
     )
+
+
+def normalize_past_key_values(pkv):
+    """
+    Ensures past_key_values has shape:
+    Tuple[Tuple[Tensor, Tensor], ...]
+    """
+    if pkv is None:
+        return None
+
+    # unwrap accidental singleton nesting
+    while (
+        isinstance(pkv, (list, tuple))
+        and len(pkv) == 1
+        and isinstance(pkv[0], (list, tuple))
+    ):
+        pkv = pkv[0]
+
+    # enforce tuple-of-tuples
+    return tuple(tuple(layer) for layer in pkv)
 
 
 def _load_model_skeleton(model_name: str, module_id: str, model_type: str = "chat"):
@@ -262,7 +284,7 @@ class DistributedWorker:
                 torch.cuda.empty_cache()
 
     def _handle_forward(self, module_id, key, size, name):
-        """Handle forward pass with mixed precision"""
+        """Handle forward pass with proper KV cache structure preservation"""
         module = self.modules[module_id]
 
         # Get data from shared memory
@@ -277,6 +299,11 @@ class DistributedWorker:
 
         if not isinstance(inp, (list, tuple)):
             inp = (inp,)
+
+        if "past_key_values" in kwargs:
+            kwargs["past_key_values"] = normalize_past_key_values(
+                kwargs.get("past_key_values")
+            )
 
         # Forward pass
         if self.use_amp and module.training:
@@ -314,69 +341,54 @@ class DistributedWorker:
 
     def _handle_generate(self, module_id, size, name):
         """Optimized text generation with CUDA acceleration"""
-        module = self.modules.get(module_id)
-        query_bytes = get_from_shared_memory(size, name, encoded=True)
-        args, kwargs = query_bytes.split(b"::")
+        module = self.modules[module_id]
+        payload = get_from_shared_memory(size, name, encoded=True)
 
-        # Convert args to tensor and move to device
-        input_ids = bytes_to_tensor(args)
+        # Deserialize
+        args_bytes, kwargs_bytes = payload.split(b"::")
+        args = bytes_to_tensor(args_bytes)
+        kwargs = bytes_to_tensor(kwargs_bytes)
 
-        if isinstance(input_ids, list):
-            input_ids = input_ids[-1]
+        # Attach input_ids from args if missing
+        if "input_ids" not in kwargs:
+            if args is None:
+                raise ValueError("generate() missing input_ids (no args, no kwargs)")
+            kwargs["input_ids"] = args
 
+        # Validate input_ids
+        if not isinstance(kwargs["input_ids"], torch.Tensor):
+            try:
+                kwargs["input_ids"] = torch.Tensor(kwargs["input_ids"][0])
+            except:
+                raise ValueError("input_ids must be convertible to torch.Tensor")
+
+        if kwargs["input_ids"].numel() == 0 or kwargs["input_ids"].shape[-1] == 0:
+            raise ValueError("input_ids is empty; cannot generate")
+
+        # Move everything to device
+        kwargs = attach_tensor(kwargs, self.device)
+
+        # CUDA defaults (non-invasive)
         if self.device.type == "cuda":
-            # Pin memory for faster transfers
-            input_ids = input_ids.pin_memory()
-
-        # Load kwargs but filter out non-generation parameters
-        all_kwargs = bytes_to_tensor(kwargs)
-        if hasattr(input_ids, "input_ids"):
-            all_kwargs['input_ids'] = input_ids.input_ids
-            if hasattr(input_ids, "attention_mask"):
-                all_kwargs["attention_mask"] = input_ids.attention_mask
-        else:
-            all_kwargs['input_ids'] = input_ids
-
-        all_kwargs = attach_tensor(all_kwargs, self.device)
-
-        # Filter out other known non-generation parameters
-        known_non_generation_params = ['module', 'class', 'data']
-        for param in known_non_generation_params:
-            all_kwargs.pop(param, None)
-
-        # Optimize generation parameters if not specified
-        if 'num_beams' not in all_kwargs and self.device.type == "cuda":
-            all_kwargs['num_beams'] = 2
-
-        # Use efficient attention if available and not specified
-        if self.device.type == "cuda" and 'use_cache' not in all_kwargs:
-            all_kwargs['use_cache'] = True  # Enable KV caching for faster generation
+            kwargs.setdefault("use_cache", True)
 
         try:
             with torch.no_grad():
-                # Use pinned memory for faster host->device transfer and synchronize for accurate profiling
                 if self.device.type == "cuda":
                     with torch.cuda.stream(self.compute_stream):
-                        output = module.generate(**all_kwargs)
+                        output = module.generate(**kwargs)
                     self.compute_stream.synchronize()
-
                 else:
-                    output = module.generate(**all_kwargs)
+                    output = module.generate(**kwargs)
 
-            # Detach and store generated output
-            detached_out = detach_tensor(output)
-            output_bytes = tensor_to_bytes(detached_out)
+            output_bytes = tensor_to_bytes(detach_tensor(output))
 
         except Exception as e:
-            # Handle any exceptions during generation
             output_bytes = json.dumps({"error": str(e)}).encode()
 
         size, name = store_in_shared_memory(output_bytes)
-
-        # Send the generated output back
         self.send_request("send_forward", (module.host, size, name, "generate"))
 
-        # Clean memory
         if self.device.type == "cuda":
             torch.cuda.empty_cache()
 

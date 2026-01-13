@@ -436,7 +436,7 @@ class DistributedValidator(DistributedWorker):
         """Check for node requests/updates"""
         try:
             # When running on the public network, manage models automatically
-            if self.node.config.endpoint:
+            if self.node.config.endpoint and self.node.config.on_chain:
                 # Periodic cleanup and model management
                 if self.CHECK_COUNTER % self.GC_CHECK_INTERVAL == 0:
                     # Clean up old request data
@@ -472,7 +472,7 @@ class DistributedValidator(DistributedWorker):
                     job_id = job_data.get("id")
 
                     # Check if this is a public job and there are already models of this type
-                    self._initialize_hosted_job(
+                    can_allocate = self._initialize_hosted_job(
                         model_name,
                         job_data=job_data,
                         payment=payment,
@@ -480,8 +480,8 @@ class DistributedValidator(DistributedWorker):
                     )
 
                     # Try to finalize if already initializing
-                    if job_id in self.models_initializing:
-                        self._finalize_hosted_job(model_name)
+                    if can_allocate and job_id in self.models_initializing:
+                        self._finalize_hosted_job(job_id)
 
                 else:
                     # If request via user node, begin the model reqs inspection for the job request
@@ -491,7 +491,7 @@ class DistributedValidator(DistributedWorker):
             for job_id, distributed_model in self.models.items():
                 if self._is_model_ready(job_id):
                     model_name = distributed_model.model_name
-                    # TODO Distinguish private generate requests from public ones so we dont use the same model?
+                    # TODO Distinguish private generate requests from public ones so we dont use the same model
                     generate_request = self.send_request(
                         "update_api_request", (model_name, job_id)
                     )
@@ -798,7 +798,6 @@ class DistributedValidator(DistributedWorker):
                 # Module not ready yet
                 return False
 
-            model_name = args["model_name"]
             distribution = args["distribution"]
             optimizer_name = args["optimizer"]
             training = args["training"]
@@ -823,9 +822,12 @@ class DistributedValidator(DistributedWorker):
             distributed_model.distribute_model(distribution)
             distributed_model.job_id = job_id
 
+            model_name = distributed_model.model_name
+
             # Load tokenizer
             if model_name not in self.tokenizers:
                 self.tokenizers[model_name] = AutoTokenizer.from_pretrained(model_name)
+
             setattr(distributed_model, 'tokenizer', self.tokenizers[model_name])
 
             # Mark as ready
@@ -835,7 +837,7 @@ class DistributedValidator(DistributedWorker):
             self.send_request(
                 "debug_print",
                 (
-                    f"DistributedValidator -> Finalized hosted job for {model_name} with module_id {module_id}",
+                    f"DistributedValidator -> Finalized hosted job for {model_name} with job_id {job_id}",
                     "green",
                     logging.INFO,
                 ),
