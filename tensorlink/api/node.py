@@ -1,5 +1,4 @@
-from tensorlink.ml.utils import get_popular_model_stats
-from tensorlink.ml.validator import extract_assistant_response
+from tensorlink.ml.utils import get_popular_model_stats, extract_assistant_response
 from tensorlink.api.models import (
     JobRequest,
     GenerationRequest,

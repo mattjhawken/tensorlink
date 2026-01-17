@@ -1,5 +1,6 @@
 import gc
 import importlib
+import inspect
 import json
 import logging
 import os
@@ -9,6 +10,7 @@ import time
 import glob
 from contextlib import contextmanager
 
+from threading import Thread
 import torch
 import torch.amp as amp
 from accelerate import init_empty_weights
@@ -21,8 +23,8 @@ from transformers import (
     AutoModelForSeq2SeqLM,
     AutoModelForSpeechSeq2Seq,
     Cache,
-    DynamicCache,
 )
+from transformers.generation.streamers import BaseStreamer
 from safetensors import safe_open
 from huggingface_hub import snapshot_download
 
@@ -106,6 +108,9 @@ def normalize_past_key_values(pkv):
     if pkv is None:
         return None
 
+    if isinstance(pkv, Cache):
+        return pkv
+
     # unwrap accidental singleton nesting
     while (
         isinstance(pkv, (list, tuple))
@@ -137,6 +142,30 @@ def _load_model_skeleton(model_name: str, module_id: str, model_type: str = "cha
     return skeleton_model
 
 
+class TensorlinkWorkerStreamer(BaseStreamer):
+    def __init__(self, send_token, send_end):
+        super().__init__()
+        self.send_token = send_token
+        self.send_end = send_end
+
+    def put(self, value):
+        if not isinstance(value, torch.Tensor):
+            return
+
+        # Normalize shape
+        if value.dim() == 2:
+            token_id = value[0, -1].item()
+        elif value.dim() == 1:
+            token_id = value[-1].item()
+        else:
+            token_id = value.item()
+
+        self.send_token(token_id)
+
+    def end(self):
+        self.send_end()
+
+
 class DistributedWorker:
     def __init__(self, node, trusted=False):
         self.node = node
@@ -157,6 +186,9 @@ class DistributedWorker:
         # Mixed precision setup vars (set on model load)
         self.scaler = None
         self.use_amp = False
+
+        self.GC_CHECK_INTERVAL = 1_000
+        self.CHECK_COUNTER = 1
 
         # Initialize CUDA streams for overlapping operations
         if self.device.type == "cuda":
@@ -202,6 +234,7 @@ class DistributedWorker:
         """Send request to coordinator node with timeout handling"""
         request = {"type": request_type, "args": args}
         try:
+            # print(f"MPC Locked: {self.node.__class__.__name__}: {request_type}")
             self.mpc_lock.acquire(timeout=timeout)
             self.node_requests.put(request)
             response = self.node_responses.get(
@@ -339,12 +372,16 @@ class DistributedWorker:
         if self.device.type == "cuda" and module.n_batch % 20 == 0:
             torch.cuda.empty_cache()
 
-    def _handle_generate(self, module_id, size, name):
-        """Optimized text generation with CUDA acceleration"""
+    def _handle_generate(self, module_id, size, name, stream):
+        """
+        Optimized text generation with optional stream generation. Called upon only
+        if we have a full model loaded and not a submodule.
+        """
         module = self.modules[module_id]
         payload = get_from_shared_memory(size, name, encoded=True)
 
         # Deserialize
+
         args_bytes, kwargs_bytes = payload.split(b"::")
         args = bytes_to_tensor(args_bytes)
         kwargs = bytes_to_tensor(kwargs_bytes)
@@ -372,25 +409,53 @@ class DistributedWorker:
         if self.device.type == "cuda":
             kwargs.setdefault("use_cache", True)
 
+        host_id = module.host
+
         try:
-            with torch.no_grad():
-                if self.device.type == "cuda":
-                    with torch.cuda.stream(self.compute_stream):
-                        output = module.generate(**kwargs)
-                    self.compute_stream.synchronize()
-                else:
+            if (
+                not stream
+                or "streamer" not in inspect.signature(module.generate).parameters
+            ):
+                with torch.no_grad():
                     output = module.generate(**kwargs)
+            else:
+                streamer = TensorlinkWorkerStreamer(
+                    send_token=lambda token: self._send_token(
+                        module_id, token, host_id
+                    ),
+                    send_end=lambda: self._send_stream_end(module_id, host_id),
+                )
+                kwargs["streamer"] = streamer
+
+                def _run_generate():
+                    with torch.no_grad():
+                        module.generate(**kwargs)
+
+                gen_thread = Thread(target=_run_generate, daemon=True)
+                gen_thread.start()
+                gen_thread.join()
 
             output_bytes = tensor_to_bytes(detach_tensor(output))
 
         except Exception as e:
             output_bytes = json.dumps({"error": str(e)}).encode()
+            if stream:
+                self._send_stream_end(module_id, host_id)
 
         size, name = store_in_shared_memory(output_bytes)
-        self.send_request("send_forward", (module.host, size, name, "generate"))
+        self.send_request("send_forward", (host_id, size, name, "generate"))
 
         if self.device.type == "cuda":
             torch.cuda.empty_cache()
+
+    def _send_token(self, module_id, token, host_id):
+        if isinstance(token, torch.Tensor):
+            token = token.item()
+
+        self.send_request("send_token", (module_id, token, host_id))
+
+    def _send_stream_end(self, module_id, host_id):
+        self.send_request("send_stream_end", (module_id, host_id))
 
     def load_module(self, module_info: dict):
         """
@@ -966,7 +1031,6 @@ class DistributedWorker:
         or model update requests, and then processes any outstanding forwards or backwards passes on the loaded modules
         """
         # Check for new modules to load
-
         args = self.send_request("check_module", None)
 
         # If we have received model info now load the model in this process
@@ -987,14 +1051,15 @@ class DistributedWorker:
 
                 self.send_request("debug_print", (f"Module {args} removed.",))
 
-        # Check for termination request
-        shutdown_signal = self.send_request("check_shutdown", None)
-        if shutdown_signal:
-            self.send_request(
-                "debug_print",
-                "Termination signal received. Shutting down DistributedWorker process...",
-            )
-            self.terminate = True
+        if self.CHECK_COUNTER % self.GC_CHECK_INTERVAL == 0:
+            # Check for termination request
+            shutdown_signal = self.send_request("check_shutdown", None)
+            if shutdown_signal:
+                self.send_request(
+                    "debug_print",
+                    "Termination signal received. Shutting down DistributedWorker process...",
+                )
+                self.terminate = True
 
         # Process each module sequentially
         if self.modules:
@@ -1035,10 +1100,12 @@ class DistributedWorker:
                 # Handle forward queue
                 forward_task = self.send_request("check_forward", module_id)
                 if forward_task:
-                    key, (size, name) = forward_task
-                    if isinstance(key, str):
-                        self._handle_generate(module_id, size, name)
+                    key, args = forward_task
+                    if len(args) == 3:
+                        size, name, stream = args
+                        self._handle_generate(module_id, size, name, stream)
                     else:
+                        size, name = args
                         self._handle_forward(module_id, key, size, name)
 
                 # Handle backward queue
@@ -1047,13 +1114,14 @@ class DistributedWorker:
                     tag, loss_relay = backward_task
                     self._handle_backward(module_id, tag, loss_relay)
 
-        # Small sleep to prevent CPU hogging
-        time.sleep(0.001)
+        self.CHECK_COUNTER += 1
 
     def run(self):
         """Main execution thread"""
         while not self.terminate:
             self.main_loop()
+
+            # Small sleep to prevent CPU hogging
             time.sleep(0.001)
 
         # Final cleanup

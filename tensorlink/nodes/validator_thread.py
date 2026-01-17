@@ -116,6 +116,8 @@ class ValidatorThread(Torchnode):
             if not local_test:
                 self.add_port_mapping(64747, 64747)
 
+        self.stream_buffers = {}
+
         # Finally, load up previous saved state if any
         if on_chain or load_previous_state:
             self.keeper.load_previous_state()
@@ -133,9 +135,14 @@ class ValidatorThread(Torchnode):
                 # Job acceptance from worker
                 if b"ACCEPT-JOB" == data[:10]:
                     return self._handle_accept_job(data, node)
+
                 # Job decline from worker
                 elif b"DECLINE-JOB" == data[:11]:
                     return self._handle_decline_job(data, node)
+
+                elif data.startswith((b"END__", b"TOKEN")):
+                    return self._handle_token(data, node)
+
                 # Job creation request from user
                 elif b"JOB-REQ" == data[:7]:
                     return self._handle_job_req(data, node)
@@ -186,6 +193,62 @@ class ValidatorThread(Torchnode):
                 tag="Validator",
             )
             raise e
+
+    def _handle_token(self, data: bytes, node: Connection):
+        """
+        Receive streamed token from worker and store it for ML process polling.
+        Packet format:
+            b"TOKEN" + module_id + token
+            b"END__" + module_id
+        """
+        try:
+            tag = data[:5]
+
+            if tag == b"TOKEN":
+                self.debug_print("RECEIVED TOKEN", tag="Torchnode")
+                payload = data[5:]
+                if b"|" not in payload:
+                    return False
+
+                module_id, token_bytes = payload.split(b"|", 1)
+                token = int.from_bytes(token_bytes, "big", signed=True)
+                buf = self._get_stream_buffer(module_id.decode())
+                buf.put(
+                    {
+                        "type": "token",
+                        "token": token,
+                        "timestamp": time.time(),
+                        "worker": node.node_id,
+                    }
+                )
+
+            elif tag == b"END__":
+                self.debug_print("RECEIVED TOKEN END", tag="Torchnode")
+                module_id = data[5:]
+
+                buf = self._get_stream_buffer(module_id.decode())
+                buf.put(
+                    {
+                        "type": "end",
+                        "timestamp": time.time(),
+                        "worker": node.node_id,
+                    }
+                )
+
+            return True
+
+        except Exception as e:
+            self.debug_print(
+                f"Stream token error: {e}",
+                colour="bright_red",
+                tag="Validator",
+            )
+            return False
+
+    def _get_stream_buffer(self, request_id):
+        if request_id not in self.stream_buffers:
+            self.stream_buffers[request_id] = queue.Queue()
+        return self.stream_buffers[request_id]
 
     def _handle_worker_stats_response(self, data: bytes, node: Connection):
         self.debug_print(
@@ -250,9 +313,10 @@ class ValidatorThread(Torchnode):
             handlers = {
                 "get_jobs": self._handle_get_jobs,
                 "check_job": self._handle_check_job,
+                "check_token": self._handle_check_token,
+                "update_stream": self._handle_update_stream,
                 "send_job_request": self.create_base_job,
                 "update_api_request": self._handle_update_api,
-                "update_stream": self._handle_update_stream,
                 "get_model_demand_stats": self._get_api_demand,
                 "get_workers": self._get_workers,
             }
@@ -271,6 +335,65 @@ class ValidatorThread(Torchnode):
         self.response_queue.put(
             {"status": "SUCCESS", "return": self.endpoint.model_name_to_request}
         )
+
+    def _handle_check_token(self, request):
+        """
+        Args:
+            request = (module_id,)
+        """
+        module_id = request[0]
+
+        buf = self.stream_buffers.get(module_id)
+
+        if not buf:
+            self.response_queue.put({"status": "SUCCESS", "return": None})
+            return
+
+        try:
+            item = buf.get_nowait()
+            if item.get("type") == "end":
+                self.stream_buffers.pop(module_id, None)
+
+            self.response_queue.put({"status": "SUCCESS", "return": item})
+
+        except queue.Empty:
+            self.response_queue.put({"status": "SUCCESS", "return": None})
+
+    def _handle_update_stream(self, request: tuple):
+        """
+        Forward streaming tokens from ML process to API endpoint.
+
+        Args:
+            request: Tuple of (request_id, token_data)
+                token_data = {
+                    "token": str,
+                    "done": bool,
+                    "full_text": str (optional, only when done),
+                    "total_tokens": int (optional),
+                    "error": str (optional),
+                    "timestamp": float
+                }
+        """
+        try:
+            if len(request) != 2:
+                self.response_queue.put(
+                    {"status": "FAILURE", "error": "Invalid stream update format"}
+                )
+                return
+
+            request_id, token_data = request
+
+            # Forward to API endpoint if it exists
+            if self.endpoint and hasattr(self.endpoint, 'send_token_to_stream'):
+                self.endpoint.send_token_to_stream(request_id, **token_data)
+                self.response_queue.put({"status": "SUCCESS", "return": None})
+            else:
+                self.response_queue.put(
+                    {"status": "FAILURE", "error": "API endpoint not available"}
+                )
+
+        except Exception as e:
+            self.response_queue.put({"status": "FAILURE", "error": str(e)})
 
     def _handle_get_jobs(self, request):
         """
@@ -412,42 +535,6 @@ class ValidatorThread(Torchnode):
         self.response_queue.put(
             {"status": "FAILURE", "error": "Invalid request format"}
         )
-
-    def _handle_update_stream(self, request: tuple):
-        """
-        Forward streaming tokens from ML process to API endpoint.
-
-        Args:
-            request: Tuple of (request_id, token_data)
-                token_data = {
-                    "token": str,
-                    "done": bool,
-                    "full_text": str (optional, only when done),
-                    "total_tokens": int (optional),
-                    "error": str (optional),
-                    "timestamp": float
-                }
-        """
-        try:
-            if len(request) != 2:
-                self.response_queue.put(
-                    {"status": "FAILURE", "error": "Invalid stream update format"}
-                )
-                return
-
-            request_id, token_data = request
-
-            # Forward to API endpoint if it exists
-            if self.endpoint and hasattr(self.endpoint, 'send_token_to_stream'):
-                self.endpoint.send_token_to_stream(request_id, **token_data)
-                self.response_queue.put({"status": "SUCCESS", "return": None})
-            else:
-                self.response_queue.put(
-                    {"status": "FAILURE", "error": "API endpoint not available"}
-                )
-
-        except Exception as e:
-            self.response_queue.put({"status": "FAILURE", "error": str(e)})
 
     def _handle_job_req(self, data: bytes, node: Connection):
         """

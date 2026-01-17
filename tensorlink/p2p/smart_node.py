@@ -282,8 +282,8 @@ class Smartnode(threading.Thread):
 
         self._init_sock()
 
-        self._priority_nodes = priority_nodes
-        self._seed_validators = seed_validators
+        self._priority_nodes = priority_nodes or []
+        self._seed_validators = seed_validators or []
         if self.on_chain:
             # Smart nodes parameters for additional security and contract connectivity
             self.url = CHAIN_URL

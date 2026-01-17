@@ -27,12 +27,14 @@ class BaseNodeConfig:
 @dataclass
 class WorkerConfig(BaseNodeConfig):
     duplicate: str = ""
+    load_previous_state: bool = False
 
 
 @dataclass
 class ValidatorConfig(BaseNodeConfig):
     endpoint: bool = True
     endpoint_ip: str = "0.0.0.0"
+    load_previous_state: bool = False
 
 
 @dataclass

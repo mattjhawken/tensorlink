@@ -7,15 +7,15 @@ import json
 
 
 SERVER_URL = "https://smartnodes.ddns.net/tensorlink-api"  # Use HTTP if HTTPS fails
-MODEL_NAME = "sshleifer/tiny-gpt2"
+MODEL_NAME = "Qwen/Qwen3-8B"
 
 
 def generate():
     payload = {
-        "hf_name": "Qwen/Qwen3-8B",
+        "hf_name": MODEL_NAME,
         "message": "Describe the role of AI in medicine.",
         "max_length": 4096,
-        "max_new_tokens": 4096,
+        "max_new_tokens": 2048,
         "temperature": 0.7,
         "do_sample": True,
         "num_beams": 3,
@@ -70,7 +70,7 @@ def generate_stream():
 
 def request_model():
     payload = {"hf_name": MODEL_NAME}
-    response = requests.post(f"{SERVER_URL}/request-job", json=payload)
+    response = requests.post(f"{SERVER_URL}/request-model", json=payload)
     print(response.json())
 
 

@@ -621,8 +621,8 @@ class DistributedModel(nn.Module):
                     host_modules[module_id] = module_info
                 else:
                     self._wrap_hf_module(module_id, module_info)
+
             else:
-                # self.wrap_module(config)
                 raise "Custom models are currently not supported."
 
         if host_modules:
@@ -642,51 +642,8 @@ class DistributedModel(nn.Module):
         # of queues if we wish to perform multiple epochs concurrently
 
     def generate(self, *args, **kwargs):
-        if "streamer" in kwargs and isinstance(self.model, OffloadedModule):
-            return self._stream_generate(*args, **kwargs)
         with _set_micro(self._thread_local, 0):
             return self.model.generate(*args, **kwargs)
-
-    def _stream_generate(
-        self,
-        input_ids,
-        streamer=None,
-        max_new_tokens=50,
-        do_sample=False,
-        eos_token_id=None,
-        **kwargs,
-    ):
-        past = None
-        cur_ids = input_ids
-
-        for _ in range(max_new_tokens):
-            outputs = self.forward(
-                input_ids=cur_ids,
-                past_key_values=past,
-                use_cache=True,
-            )
-
-            logits = outputs.logits[:, -1]
-
-            next_token = (
-                torch.multinomial(torch.softmax(logits, -1), 1)
-                if do_sample
-                else torch.argmax(logits, -1, keepdim=True)
-            )
-
-            past = outputs.past_key_values
-            cur_ids = next_token
-
-            if streamer:
-                streamer.put(next_token)
-
-            if eos_token_id is not None and next_token.item() == eos_token_id:
-                break
-
-        if streamer:
-            streamer.end()
-
-        return cur_ids
 
     def wrap_module(self, module_id: list, worker_id):
         # Access the module and parent
@@ -1195,11 +1152,17 @@ class OffloadedModule(nn.Module):
             pass
 
     def generate(self, *args, **kwargs):
+        stream = kwargs.get("stream", False)
+        if stream:
+            kwargs.pop("stream")
+
         args_bytes = tensor_to_bytes(args)
         kwargs_bytes = tensor_to_bytes(kwargs)
         request_bytes = self.module_id.encode() + args_bytes + b"::" + kwargs_bytes
         size, shm_name = store_in_shared_memory(request_bytes, encoded=True)
-        self.parent_model.send_request("generate", (self.worker_id, size, shm_name))
+        self.parent_model.send_request(
+            "generate", (self.worker_id, size, shm_name, stream)
+        )
 
         # Wait for response, change to appending waiting thread to list in master
         waiting = True

@@ -32,6 +32,7 @@ class WorkerThread(Torchnode):
         mining_active=None,
         reserved_memory=None,
         duplicate="",
+        load_previous_state=False,
         priority_nodes: list = None,
         seed_validators: list = None,
     ):
@@ -76,15 +77,25 @@ class WorkerThread(Torchnode):
 
             self.dht.store(hashlib.sha256(b"ADDRESS").hexdigest(), self.public_key)
 
-        attempts = 0
-        while attempts < 3 and len(self.validators) == 0:
-            self.bootstrap()
+        should_bootstrap = bool(self._priority_nodes) or self.on_chain
+        if should_bootstrap:
+            attempts = 0
+            while attempts < 3 and len(self.validators) == 0:
+                self.bootstrap()
 
-            if len(self.nodes) == 0:
-                time.sleep(10)
-                attempts += 1
+                if len(self.nodes) == 0:
+                    time.sleep(3)
+                    attempts += 1
+        else:
+            self.debug_print(
+                "Skipping bootstrap (no priority nodes and not on-chain).",
+                tag="Worker",
+                level=logging.INFO,
+            )
 
-        self.keeper.load_previous_state()
+        # Finally, load up previous saved state if any
+        if on_chain or load_previous_state:
+            self.keeper.load_previous_state()
 
     def handle_data(self, data: bytes, node: Connection):
         """
@@ -158,7 +169,7 @@ class WorkerThread(Torchnode):
                 module_size = module_info["memory"]
                 model_name = module_info["name"]
                 training = module_info["training"]
-                optimizer_name = json.dumps(module_info["optimizer_spec"])
+                optimizer_name = json.dumps(module_info.get("optimizer_spec"))
                 module_info["status"] = "loading"
 
                 if self.available_gpu_memory >= module_size:

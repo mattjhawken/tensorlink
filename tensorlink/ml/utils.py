@@ -4,6 +4,7 @@ from collections import defaultdict
 from typing import Dict
 import time
 import os
+import re
 import inspect
 import torch
 import torch.nn as nn
@@ -139,9 +140,114 @@ def get_gpu_memory():
             memory += free
 
     else:
-        memory += 1e9
+        memory += 4e8
 
     return memory
+
+
+def extract_assistant_response(text: str, model_name: str = None) -> str:
+    """
+    Universal extractor that removes system/user/thought tags and returns
+    the final human-readable assistant response.
+    """
+
+    # Remove reasoning or hidden thought blocks (e.g. <think>...</think>)
+    text = re.sub(
+        r"<\s*(think|reflection|thought|internal|analysis)\s*>.*?<\s*/\1\s*>",
+        "",
+        text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+
+    # Remove common chat tags used by newer models
+    text = re.sub(r"<\|im_start\|>\s*\w+\s*", "", text)
+    text = re.sub(r"<\|im_end\|>", "", text)
+    text = re.sub(r"<\|assistant\|>", "", text)
+    text = re.sub(r"<\|user\|>", "", text)
+    text = re.sub(r"<\|system\|>", "", text)
+
+    # Strip out any prefixes like "assistant:" or "Assistant:"
+    text = re.sub(r"(?i)\bassistant\s*[:：]\s*", "", text)
+
+    # Remove lingering system/user scaffolding
+    text = re.sub(r"(?i)\b(system|user)\s*[:：]\s*", "", text)
+    text = text.strip().replace("\r", "")
+
+    # If multiple paragraphs, prefer the last coherent chunk
+    # (models sometimes prepend hidden reasoning)
+    if "\n\n" in text:
+        parts = [p.strip() for p in text.split("\n\n") if len(p.strip()) > 10]
+        if parts:
+            text = parts[-1]
+
+    # Fallback: if text still empty, just return as-is (safe default)
+    return text.strip() or "[No output produced]"
+
+
+def format_chat_prompt(model_name, current_message, history):
+    """Format the chat history and current message into a prompt suitable for the specified model."""
+
+    # Different models require different formatting
+    if "Qwen" in model_name:
+        # Qwen-specific formatting
+        system_prompt = (
+            "You are a helpful assistant. Respond directly to the user's questions."
+        )
+
+        formatted_prompt = f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
+
+        # Add conversation history
+        if history and len(history) > 0:
+            for msg in history:
+                role = msg["role"]
+                content = msg["content"]
+                formatted_prompt += f"<|im_start|>{role}\n{content}<|im_end|>\n"
+
+        # Add the current message
+        formatted_prompt += f"<|im_start|>user\n{current_message}<|im_end|>\n"
+        formatted_prompt += "<|im_start|>assistant\n"
+
+        return formatted_prompt
+
+    elif "llama" in model_name.lower():
+        # Llama-style formatting
+        system_prompt = (
+            "You are a helpful assistant. Respond directly to the user's questions."
+        )
+        formatted_prompt = f"<s>[INST] <<SYS>>\n{system_prompt}\n<</SYS>>\n\n"
+
+        # Add conversation history
+        if history and len(history) > 0:
+            for i, msg in enumerate(history):
+                if msg["role"] == "user":
+                    if i > 0:
+                        formatted_prompt += "[/INST]\n\n[INST] "
+                    formatted_prompt += f"{msg['content']}"
+                else:  # assistant
+                    formatted_prompt += f" [/INST]\n\n{msg['content']}\n\n[INST] "
+
+        # Add the current message and prepare for response
+        formatted_prompt += f"{current_message} [/INST]\n\n"
+
+        return formatted_prompt
+
+    else:
+        # Generic formatting for other models
+        system_prompt = (
+            "You are a helpful assistant. Respond directly to the user's questions."
+        )
+        formatted_prompt = f"System: {system_prompt}\n\n"
+
+        # Add conversation history
+        if history and len(history) > 0:
+            for msg in history:
+                role_prefix = "User: " if msg["role"] == "user" else "Assistant: "
+                formatted_prompt += f"{role_prefix}{msg['content']}\n\n"
+
+        # Add the current message
+        formatted_prompt += f"User: {current_message}\n\nAssistant: "
+
+        return formatted_prompt
 
 
 def find_module(module: nn.Module, target_name: str, ids: list = []):
@@ -277,7 +383,8 @@ def enable_grad(tensor):
 
     elif isinstance(tensor, ModelOutput):
         # Iterate through ModelOutput fields, enabling grad for any Tensors
-        for key, value in tensor.items():
+        for key in tensor.__dataclass_fields__:
+            value = getattr(tensor, key)
             if isinstance(value, torch.Tensor) and value.is_floating_point():
                 tensor[key] = value.detach().clone().requires_grad_(True)
         return tensor
@@ -331,37 +438,54 @@ def replace_output_with_custom_grad(combined_output, custom_grad_output):
     Replace the main output tensor (logits, last_hidden_state, etc.) in the combined_output
     with the custom_grad_output, preserving structure and returning a ModelOutput when possible.
     """
+
     # If the combined output is already a tensor
     if isinstance(combined_output, torch.Tensor):
         return custom_grad_output
 
-    # Handle ModelOutput subclasses (SequenceClassifierOutput, etc.)
+    # Handle ModelOutput subclasses
     if isinstance(combined_output, ModelOutput):
-        data = combined_output.to_dict()
-        if "logits" in data:
+        data = {}
+
+        # Extract fields safely (HF-version independent)
+        for key in combined_output.__dataclass_fields__:
+            data[key] = getattr(combined_output, key)
+
+        # Replace primary tensor
+        if "logits" in data and isinstance(data["logits"], torch.Tensor):
             data["logits"] = custom_grad_output
-        elif "last_hidden_state" in data:
+
+        elif "last_hidden_state" in data and isinstance(
+            data["last_hidden_state"], torch.Tensor
+        ):
             data["last_hidden_state"] = custom_grad_output
+
         else:
             for k, v in data.items():
                 if isinstance(v, torch.Tensor):
                     data[k] = custom_grad_output
                     break
+
         return combined_output.__class__(**data)
 
     # Handle dict outputs
     if isinstance(combined_output, dict):
         new_output = dict(combined_output)
-        if "logits" in new_output:
+
+        if "logits" in new_output and isinstance(new_output["logits"], torch.Tensor):
             new_output["logits"] = custom_grad_output
-        elif "last_hidden_state" in new_output:
+
+        elif "last_hidden_state" in new_output and isinstance(
+            new_output["last_hidden_state"], torch.Tensor
+        ):
             new_output["last_hidden_state"] = custom_grad_output
+
         else:
             for k, v in new_output.items():
                 if isinstance(v, torch.Tensor):
                     new_output[k] = custom_grad_output
                     break
-        # Wrap dict in a generic ModelOutput for consistency
+
         return ModelOutput(**new_output)
 
     raise TypeError(f"Unsupported output type: {type(combined_output)}")
@@ -375,31 +499,12 @@ def combine_micro_batches(micro_batches):
         # If outputs are tensors, concatenate them along the batch dimension
         return torch.cat(micro_batches, dim=0)
 
-    elif isinstance(micro_batches[0], dict):
-        combined_output = defaultdict(list)
-
-        for output in micro_batches:
-            for key, value in output.items():
-                combined_output[key].append(value)
-
-        final_output = {}
-        for key, value in combined_output.items():
-            if isinstance(value[0], torch.Tensor):
-                # Handle scalar tensors separately
-                if value[0].dim() == 0:
-                    final_output[key] = torch.stack(value)
-                else:
-                    final_output[key] = torch.cat(value, dim=0)
-            else:
-                final_output[key] = value  # Leave non-tensor values as-is
-
-        return final_output
-
     elif isinstance(micro_batches[0], ModelOutput):
         combined_output = defaultdict(list)
 
         for output in micro_batches:
-            for key, value in output.items():
+            for key in output.__dataclass_fields__:
+                value = getattr(output, key)
                 combined_output[key].append(value)
 
         # Concatenate fields that are tensors
@@ -424,6 +529,26 @@ def combine_micro_batches(micro_batches):
 
         return type(micro_batches[0])(**final_output)
 
+    elif isinstance(micro_batches[0], dict):
+        combined_output = defaultdict(list)
+
+        for output in micro_batches:
+            for key, value in output.items():
+                combined_output[key].append(value)
+
+        final_output = {}
+        for key, value in combined_output.items():
+            if isinstance(value[0], torch.Tensor):
+                # Handle scalar tensors separately
+                if value[0].dim() == 0:
+                    final_output[key] = torch.stack(value)
+                else:
+                    final_output[key] = torch.cat(value, dim=0)
+            else:
+                final_output[key] = value  # Leave non-tensor values as-is
+
+        return final_output
+
     else:
         raise TypeError("Unsupported output type")
 
@@ -440,7 +565,8 @@ def split_micro_batches(inputs, n_chunks):
 
     elif isinstance(inputs, ModelOutput):
         chunked_outputs = [defaultdict(list) for _ in range(n_chunks)]
-        for key, value in inputs.items():
+        for key in inputs.__dataclass_fields__:
+            value = getattr(inputs, key)
             if isinstance(value, torch.Tensor):
                 value_chunks = torch.chunk(value, n_chunks)
                 for i in range(n_chunks):
@@ -481,7 +607,8 @@ def get_batch_size(inputs):
     if isinstance(inputs, torch.Tensor):
         return inputs.size(0)
     elif isinstance(inputs, ModelOutput):
-        for value in inputs.values():
+        for key in inputs.__dataclass_fields__:
+            value = getattr(inputs, key)
             if isinstance(value, torch.Tensor):
                 return value.size(0)
     else:
@@ -590,6 +717,18 @@ def tensor_to_bytes(tensor):
 
             return serialized_data
 
+        elif hasattr(obj, "__dict__"):
+            try:
+                return {
+                    "__serialized__": True,
+                    "module": obj.__class__.__module__,
+                    "class": obj.__class__.__name__,
+                    "is_object": True,
+                    "data": _serialize(obj.__dict__),
+                }
+            except (ValueError, TypeError):
+                pass
+
         elif isinstance(obj, dict):
             return {k: _serialize(v) for k, v in obj.items()}
 
@@ -602,19 +741,6 @@ def tensor_to_bytes(tensor):
                 "type": "tuple",
                 "data": [_serialize(v) for v in obj],
             }
-
-        # Handle other objects by trying to extract their __dict__
-        elif hasattr(obj, "__dict__"):
-            try:
-                return {
-                    "__serialized__": True,
-                    "module": obj.__class__.__module__,
-                    "class": obj.__class__.__name__,
-                    "is_object": True,
-                    "data": _serialize(obj.__dict__),
-                }
-            except (ValueError, TypeError):
-                pass
 
         # Return a placeholder for unsupported types
         return f"UNSERIALIZABLE_OBJECT_{type(obj).__name__}"
