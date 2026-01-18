@@ -43,6 +43,24 @@ except ImportError:
 "
 }
 
+# Function to get node type from config
+get_node_type() {
+    python3 -c "
+import json
+import sys
+try:
+    with open('config.json', 'r') as f:
+        config = json.load(f)
+        if 'config' in config:
+            config = config['config']
+        node_type = config.get('node', {}).get('type', 'worker').lower()
+        print(node_type)
+except Exception as e:
+    print('worker', file=sys.stderr)
+    print(f'Warning: Could not read node type from config.json, defaulting to worker. Error: {e}', file=sys.stderr)
+" 2>&1
+}
+
 # Trap any unexpected errors
 trap 'handle_error "Unexpected error occurred on line $LINENO"' ERR
 
@@ -129,8 +147,17 @@ if [ "$EUID" -eq 0 ]; then
     RUN_AS_SUDO="sudo"
 fi
 
-# Run Tensorlink validator
-echo "Starting validator..."
-$RUN_AS_SUDO python run_validator.py
+# Detect node type from config
+NODE_TYPE=$(get_node_type)
+echo "Detected node type from config.json: $NODE_TYPE"
+
+# Validate node type
+if [[ "$NODE_TYPE" != "worker" && "$NODE_TYPE" != "validator" ]]; then
+    handle_error "Invalid node type '$NODE_TYPE' in config.json. Must be 'worker' or 'validator'"
+fi
+
+# Run the unified node script
+echo "Starting $NODE_TYPE node..."
+$RUN_AS_SUDO python run_node.py
 
 deactivate

@@ -1,8 +1,10 @@
 {
   "config": {
-    "network": {
+    "node": {
+      "type": "worker",
       "mode": "public",
       "endpoint": false,
+      "endpoint-url": "127.0.0.1",
       "priority_nodes": []
     },
     "crypto": {
