@@ -44,7 +44,7 @@ def uwv_nodes():
             local_test=LOCAL,
             print_level=PRINT_LEVEL,
             endpoint=False,
-            endpoint_ip="127.0.0.1",
+            endpoint_url="127.0.0.1",
             load_previous_state=False,
         )
     )
@@ -81,7 +81,7 @@ def wwv_nodes():
             local_test=LOCAL,
             print_level=PRINT_LEVEL,
             endpoint=True,
-            endpoint_ip="127.0.0.1",
+            endpoint_url="127.0.0.1",
             load_previous_state=False,
         )
     )

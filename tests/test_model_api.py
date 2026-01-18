@@ -25,7 +25,7 @@ MODELS = [
         {
             "name": "sshleifer/tiny-gpt2",
             "timeout": 60,
-            "sleep": 5,
+            "sleep": 20,
             "parsed": False,
         },
         id="tiny-gpt2",
@@ -34,7 +34,7 @@ MODELS = [
         {
             "name": "HuggingFaceTB/SmolLM-135M",
             "timeout": 120,
-            "sleep": 10,
+            "sleep": 40,
             "parsed": True,
         },
         id="smollm-135m",
@@ -42,43 +42,38 @@ MODELS = [
 ]
 
 
-@pytest.fixture(params=MODELS)
-def model_cfg(request):
-    return request.param
-
-
-@pytest.fixture
-def requested_model(connected_wwv_nodes, model_cfg):
+@pytest.fixture(params=MODELS, scope="function")
+def model_env(request, connected_wwv_nodes):
     """
-    Request a model on the Tensorlink network before tests run.
-    Using WWV nodes (Worker-Worker-Validator) for API tests.
+    Uses existing WWV setup but guarantees fresh nodes per model param.
     """
+    cfg = request.param
     worker, worker2, validator, _ = connected_wwv_nodes
 
     payload = {
-        "hf_name": model_cfg["name"],
+        "hf_name": cfg["name"],
         "model_type": "causal",
     }
 
     response = requests.post(
         url=f"{SERVER_URL}/request-model",
         json=payload,
-        timeout=model_cfg["timeout"],
+        timeout=cfg["timeout"],
     )
 
     assert response.status_code == 200
 
-    return model_cfg
+    # Let model load/shard
+    time.sleep(cfg["sleep"])
+
+    yield cfg, (worker, worker2, validator)
 
 
-def test_generate(connected_wwv_nodes, requested_model):
+def test_generate(model_env):
     """
     Test generate request via API
     """
-    cfg = requested_model
-    worker, worker2, validator, _ = connected_wwv_nodes
-
-    time.sleep(cfg["sleep"])
+    cfg, (worker, worker2, validator) = model_env
 
     generate_payload = {
         "hf_name": cfg["name"],
@@ -97,14 +92,11 @@ def test_generate(connected_wwv_nodes, requested_model):
     assert response.status_code == 200
 
 
-def test_streaming_generation(connected_wwv_nodes, requested_model):
+def test_streaming_generation(model_env):
     """
     Test generate request with token-by-token streaming via API
     """
-    cfg = requested_model
-    worker, worker2, validator, _ = connected_wwv_nodes
-
-    time.sleep(cfg["sleep"])
+    cfg, (worker, worker2, validator) = model_env
 
     generate_payload = {
         "hf_name": cfg["name"],
