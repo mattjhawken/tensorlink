@@ -2,8 +2,6 @@
 
 Comprehensive examples for using Tensorlink across different interfaces and deployment scenarios.
 
----
-
 ## 📚 Table of Contents
 
 - [Python Examples](#python-examples)
@@ -19,8 +17,6 @@ Comprehensive examples for using Tensorlink across different interfaces and depl
   - [Public Compute Provider](#public-compute-provider)
   - [Private LAN Cluster](#private-lan-cluster)
   - [Local Development](#local-development)
-
----
 
 ## Python Examples
  
@@ -55,8 +51,6 @@ print(response)
 - Automatically shards the model across GPUs if needed
 - Executes forward passes across the network
 - Returns outputs as standard PyTorch tensors
-
----
 
 ### Distributed Training
 
@@ -113,8 +107,6 @@ model.save_pretrained("./fine-tuned-model")
 - Gradients automatically synchronized
 - Works with any PyTorch optimizer
 - Checkpointing supported
-
----
 
 ### Private Clusters and Custom Models
 
@@ -189,8 +181,6 @@ print(result["generated_text"])
 }
 ```
 
----
-
 ### Streaming Response
 
 Stream tokens incrementally for real-time output:
@@ -230,8 +220,6 @@ data:  dance
 data: ,
 data: [DONE]
 ```
-
----
 
 ### Chat Completions (OpenAI-Compatible)
 
@@ -305,8 +293,6 @@ for line in response.iter_lines():
         # Process SSE chunk
         print(decoded)
 ```
-
----
 
 ### Model Preloading
 
@@ -388,8 +374,6 @@ response = requests.post(
 **Monitor earnings:**
 Check your wallet address on the Smartnodes network dashboard.
 
----
-
 ### Private LAN Cluster
 
 **Scenario:** You have 3 machines on your local network and want to run models privately.
@@ -470,8 +454,6 @@ response = requests.post(
 or see [Private Clusters & Custom Models](#private-clusters-and-custom-models) for connecting
 within Python.
 
----
-
 ### Local Development
 
 **Scenario:** Test Tensorlink locally without any network connectivity.
@@ -525,16 +507,16 @@ model = DistributedModel(
 **Private networks:**
 - Use firewall rules to restrict access to validator endpoints
 - Enable `trusted: true` only on nodes you control
-- Consider VPN for remote access to private clusters
+- May require port forwarding for public access
 
 **Public networks:**
 - Never set `trusted: true` on public nodes
 - Don't send sensitive data through public validators
-- Validate model outputs (public nodes are untrusted)
+- Validate model outputs (public nodes are untrusted) (determinate outputs coming soon!)
 
 ## Need Help?
 
 - 💬 **[Join our Discord](https://discord.gg/aCW2kTNzJ2)** for community support
 - 📚 **[Read the docs](https://smartnodes.ca/tensorlink/docs)** for API reference
 - 🐛 **[Report issues](https://github.com/mattjhawken/tensorlink/issues)** on GitHub
-- 📧 **Email:** support@smartnodes.ca
+- 

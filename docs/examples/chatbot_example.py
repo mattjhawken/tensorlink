@@ -6,11 +6,9 @@ conversation history.
 """
 
 import torch
-import logging
 from collections import deque
 from transformers import AutoTokenizer
 from tensorlink.ml import DistributedModel
-from tensorlink.nodes import User, UserConfig
 
 MODEL_NAME = "Qwen/Qwen3-8B-Instruct"
 
@@ -19,10 +17,8 @@ MAX_NEW_TOKENS = 256
 TEMPERATURE = 0.4
 
 if __name__ == "__main__":
-    user = User(config=UserConfig(print_level=logging.INFO))
-
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    model = DistributedModel(model=MODEL_NAME, training=False, node=user)
+    model = DistributedModel(model=MODEL_NAME, training=False)
 
     history = deque(maxlen=MAX_HISTORY_TURNS)
     history.append("System: You are a helpful assistant.")
@@ -53,5 +49,3 @@ if __name__ == "__main__":
 
         print(f"Assistant: {reply}\n")
         history.append(f"Assistant: {reply}")
-
-    user.cleanup()

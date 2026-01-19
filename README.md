@@ -135,7 +135,7 @@ Your `config.json` controls networking, rewards, and model execution behavior.
 | `trusted` | `bool` | Allows execution of custom user-supplied models |
 | `max_vram_gb` | `int` | Limits VRAM usage per node to prevent overload |
 
-> For common configuration recipes and examples, see [**Examples: Node Configuration**](docs/EXAMPLES.md#node-configuration-examples)
+> For common configuration recipes and examples, see [**Examples: Node Configuration**](docs/examples/EXAMPLES.md#node-configuration-examples)
 
 ---
 
@@ -190,14 +190,14 @@ for line in r.iter_lines():
         print(line.decode(), end="")
 ```
 
-> For complete API documentation, streaming examples, and parameters, see [**Examples: HTTP API**](docs/EXAMPLES.md#http-api-examples)
+> For complete API documentation, streaming examples, and parameters, see [**Examples: HTTP API**](docs/examples/EXAMPLES.md#http-api-examples)
 
 ---
 
 ## Learn More
 
 - 📚 **[Documentation](https://smartnodes.ca/tensorlink/docs)** – Full API reference and guides
-- 🎯 **[Examples](docs/EXAMPLES.md)** – Comprehensive usage patterns and recipes
+- 🎯 **[Examples](docs/examples/EXAMPLES.md)** – Comprehensive usage patterns and recipes
 - 💬 **[Discord Community](https://discord.gg/aCW2kTNzJ2)** – Get help and connect with developers
 - 🎮 **[Live Demo](https://smartnodes.ca/localhostGPT)** – Try localhostGPT powered by Tensorlink
 - 📘 **[Litepaper](docs/LITEPAPER.md)** – Technical overview and architecture
@@ -206,9 +206,9 @@ for line in r.iter_lines():
 
 We welcome contributions! Here's how to get involved:
 
-- 🐛 **Report bugs** via [GitHub Issues](https://github.com/mattjhawken/tensorlink/issues)
-- 💡 **Suggest features** on our [Discord](https://discord.gg/aCW2kTNzJ2)
-- 🔧 **Submit PRs** to improve code or documentation
-- ☕ **Support the project** via [Buy Me a Coffee](https://www.buymeacoffee.com/smartnodes)
+- **Report bugs** via [GitHub Issues](https://github.com/mattjhawken/tensorlink/issues)
+- **Suggest features** on our [Discord](https://discord.gg/aCW2kTNzJ2)
+- **Submit PRs** to improve code or documentation
+- **Support the project** via [Buy Me a Coffee](https://www.buymeacoffee.com/smartnodes)
 
 Tensorlink is released under the [MIT License](LICENSE).

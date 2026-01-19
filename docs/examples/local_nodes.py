@@ -43,7 +43,7 @@ if __name__ == "__main__":
             local_test=LOCAL,
             print_level=PRINT_LEVEL,
             endpoint=True,
-            endpoint_ip="127.0.0.1",
+            endpoint_url="127.0.0.1",
         )
     )
     time.sleep(1)

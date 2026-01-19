@@ -45,7 +45,7 @@ LOCAL = True  # Network operations are on localhost when true (i.e. 127.0.0.1)
 UPNP = (
     True if not LOCAL else False
 )  # Must be activated for public network use. Upgrade to STUN or other in the future.
-OFFCHAIN = LOCAL  # Can be used to deactivate on-chain features (for private jobs)
+ON_CHAIN = not LOCAL  # Can be used to deactivate on-chain features (for private jobs)
 
 # Parameters for distributed model request.
 BATCH_SIZE = 16
@@ -67,7 +67,7 @@ if __name__ == "__main__":
     validator = Validator(
         config=ValidatorConfig(
             upnp=UPNP,
-            off_chain_test=OFFCHAIN,
+            on_chain=ON_CHAIN,
             local_test=LOCAL,
             print_level=logging.DEBUG,
         )
@@ -75,7 +75,7 @@ if __name__ == "__main__":
     user = User(
         config=UserConfig(
             upnp=UPNP,
-            off_chain_test=OFFCHAIN,
+            on_chain=ON_CHAIN,
             local_test=LOCAL,
             print_level=logging.DEBUG,
         )
@@ -83,7 +83,7 @@ if __name__ == "__main__":
     worker = Worker(
         config=WorkerConfig(
             upnp=UPNP,
-            off_chain_test=OFFCHAIN,
+            on_chain=ON_CHAIN,
             local_test=LOCAL,
             print_level=logging.DEBUG,
         )
