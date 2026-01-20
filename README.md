@@ -20,9 +20,8 @@
 
 - [What is Tensorlink?](#what-is-tensorlink)
 - [Quick Start](#quick-start)
-- [Node Configuration](#configuration-reference)
+- [Node Reference](#configuration-reference)
 - [API Reference](#api-reference)
-- [Supported Models](#supported-models)
 - [Learn More](#learn-more)
 - [Contributing](#contributing)
 
@@ -377,17 +376,10 @@ print(r.json())
 # {"status": "success", "message": "Model loading initiated"}
 ```
 
-### Supported Models
-
-Tensorlink supports any Hugging Face `AutoModelForCausalLM` compatible model, for example:
-- **Qwen 3**: `Qwen/Qwen3-14B`, `Qwen/Qwen3-8B`, etc.
-- **Llama 3**: `meta-llama/Llama-3.1-8B-Instruct`, `meta-llama/Llama-3.1-70B-Instruct`
-- **Mistral**: `mistralai/Mistral-7B-Instruct-v0.3`, `mistralai/Mixtral-8x7B-Instruct-v0.1`
-- **Phi**: `microsoft/phi-3-mini-4k-instruct`
-- **DeepSeek**: `deepseek-ai/deepseek-coder-33b-instruct`
-
-
 ### Notes
+
+Tensorlink is designed to support any Hugging Face model, however errors with certain 
+models may appear. Please report any bugs via [Issues](https://github.com/mattjhawken/tensorlink/issues)
 
 - **Temperature**: Values below `0.01` automatically disable sampling to prevent numerical instability
 - **Streaming**: Both endpoints support Server-Sent Events (SSE) streaming via `stream: true`
