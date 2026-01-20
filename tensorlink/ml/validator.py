@@ -600,6 +600,7 @@ class DistributedValidator(DistributedWorker):
         )
 
         prompt_tokens = inputs.input_ids.shape[1]
+        input_ids = inputs.input_ids.to(self.device)
 
         # NORMALIZE ARGS WITH PROMPT TOKEN COUNT
         try:
@@ -624,15 +625,16 @@ class DistributedValidator(DistributedWorker):
         # GENERATE
         with torch.no_grad():
             try:
+                print(f"ARGS: {args}")
                 outputs = distributed_model.generate(
-                    inputs.input_ids,
-                    max_new_tokens=args["max_new_tokens"],
-                    temperature=args["temperature"],
-                    pad_token_id=args["pad_token_id"],
-                    eos_token_id=args["eos_token_id"],
-                    do_sample=args["do_sample"],
-                    num_beams=args["num_beams"],
-                    **({} if "top_p" not in args else {"top_p": args["top_p"]}),
+                    input_ids,
+                    # max_new_tokens=args["max_new_tokens"],
+                    # temperature=args["temperature"],
+                    # pad_token_id=args["pad_token_id"],
+                    # eos_token_id=args["eos_token_id"],
+                    # do_sample=args["do_sample"],
+                    # num_beams=args["num_beams"],
+                    # **({} if "top_p" not in args else {"top_p": args["top_p"]}),
                 )
             except RuntimeError as e:
                 # Handle CUDA OOM or other runtime errors
@@ -736,8 +738,8 @@ class DistributedValidator(DistributedWorker):
                 "stream": True,
                 "max_new_tokens": args["max_new_tokens"],
                 "temperature": args["temperature"],
-                "pad_token_id": args["pad_token_id"],
-                "eos_token_id": args["eos_token_id"],
+                # "pad_token_id": args["pad_token_id"],
+                # "eos_token_id": args["eos_token_id"],
                 "do_sample": args["do_sample"],
                 "num_beams": args["num_beams"],
             }
