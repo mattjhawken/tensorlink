@@ -1,11 +1,4 @@
 # tests/conftest.py
-import logging
-import time
-import pytest
-import os
-
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
 from tensorlink.nodes import (
     User,
     Validator,
@@ -15,6 +8,13 @@ from tensorlink.nodes import (
     ValidatorConfig,
 )
 
+import logging
+import time
+import pytest
+import os
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 
 PRINT_LEVEL = logging.DEBUG
 ON_CHAIN = False
@@ -22,7 +22,7 @@ LOCAL = True
 UPNP = False
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture(scope="module")
 def uwv_nodes():
     """
     Create User-Worker-Validator node group for tests.
@@ -44,7 +44,7 @@ def uwv_nodes():
             local_test=LOCAL,
             print_level=PRINT_LEVEL,
             endpoint=False,
-            endpoint_ip="127.0.0.1",
+            endpoint_url="127.0.0.1",
             load_previous_state=False,
         )
     )
@@ -68,7 +68,7 @@ def uwv_nodes():
     time.sleep(3)
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture(scope="module")
 def wwv_nodes():
     """
     Create Worker-Worker-Validator node group for tests.
@@ -81,7 +81,7 @@ def wwv_nodes():
             local_test=LOCAL,
             print_level=PRINT_LEVEL,
             endpoint=True,
-            endpoint_ip="127.0.0.1",
+            endpoint_url="127.0.0.1",
             load_previous_state=False,
         )
     )
@@ -116,7 +116,7 @@ def wwv_nodes():
     time.sleep(3)
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture(scope="module")
 def connected_uwv_nodes(uwv_nodes):
     """
     Fully connected User-Worker-Validator network.
@@ -134,7 +134,7 @@ def connected_uwv_nodes(uwv_nodes):
     return user, worker, validator, (val_key, val_host, val_port)
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture(scope="module")
 def connected_wwv_nodes(wwv_nodes):
     """
     Fully connected Worker-Worker-Validator network.

@@ -30,7 +30,8 @@ class ValidatorThread(Torchnode):
         on_chain=False,
         local_test=False,
         endpoint=True,
-        endpoint_ip="0.0.0.0",
+        endpoint_url="0.0.0.0",
+        endpoint_port=64747,
         load_previous_state=False,
         priority_nodes: list = None,
         seed_validators: list = None,
@@ -112,9 +113,9 @@ class ValidatorThread(Torchnode):
 
         # Start up the API for handling public jobs
         if endpoint:
-            self.endpoint = TensorlinkAPI(self, host=endpoint_ip)
+            self.endpoint = TensorlinkAPI(self, host=endpoint_url, port=endpoint_port)
             if not local_test:
-                self.add_port_mapping(64747, 64747)
+                self.add_port_mapping(endpoint_port, endpoint_port)
 
         self.stream_buffers = {}
 
@@ -362,16 +363,12 @@ class ValidatorThread(Torchnode):
     def _handle_update_stream(self, request: tuple):
         """
         Forward streaming tokens from ML process to API endpoint.
-
         Args:
             request: Tuple of (request_id, token_data)
                 token_data = {
-                    "token": str,
+                    "chunk": pre-formatted SSE chunk (optional),
                     "done": bool,
-                    "full_text": str (optional, only when done),
-                    "total_tokens": int (optional),
-                    "error": str (optional),
-                    "timestamp": float
+                    "final_chunk": full SSE chunk when done (optional)
                 }
         """
         try:
@@ -383,14 +380,32 @@ class ValidatorThread(Torchnode):
 
             request_id, token_data = request
 
-            # Forward to API endpoint if it exists
-            if self.endpoint and hasattr(self.endpoint, 'send_token_to_stream'):
-                self.endpoint.send_token_to_stream(request_id, **token_data)
-                self.response_queue.put({"status": "SUCCESS", "return": None})
-            else:
+            if not self.endpoint:
                 self.response_queue.put(
                     {"status": "FAILURE", "error": "API endpoint not available"}
                 )
+                return
+
+            # If generation is done, send the final_chunk
+            if token_data.get("done"):
+                chunk = token_data.get("final_chunk")
+                if not chunk:
+                    chunk = "data: [DONE]\n\n"
+
+                # Send with both token AND final_chunk for clarity
+                self.endpoint.send_token_to_stream(
+                    request_id, token=chunk, final_chunk=chunk, done=True  # Add this
+                )
+            else:
+                # Otherwise, send the validator-formatted chunk directly
+                chunk = token_data.get("chunk")
+                if not chunk:
+                    self.response_queue.put({"status": "SUCCESS", "return": None})
+                    return
+
+                self.endpoint.send_token_to_stream(request_id, token=chunk, done=False)
+
+            self.response_queue.put({"status": "SUCCESS", "return": None})
 
         except Exception as e:
             self.response_queue.put({"status": "FAILURE", "error": str(e)})

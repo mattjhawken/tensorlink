@@ -1,71 +1,73 @@
 # Contributing to Tensorlink
 
-🚀 **Welcome to Tensorlink**  
-We’re building a peer-to-peer framework for running large-scale neural networks using PyTorch and Hugging Face. 
-Tensorlink aims to democratize access to powerful models through compute-sharing, modular APIs, and privacy-preserving distributed training and inference.
+Thank you for your interest in contributing! This guide will help you get started.
 
-Thanks for your interest, we welcome more contributors!
+## Development Setup
 
----
+### Prerequisites
+- Python 3.10+
+- PyTorch 2.3+
+- Git
 
-## 🧰 Getting Started
+### Getting Started
 
-### 1. Clone the Repository
-
+1. Fork and clone the repository:
 ```bash
-git clone https://github.com/your-org/tensorlink.git
+git clone https://github.com/mattjhawken/tensorlink.git
 cd tensorlink
-````
+```
 
-### 2. Set Up the Environment
-
-We recommend using a virtual environment:
-
+2. Install development dependencies:
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-pip install -e .[dev]
+pip install -e ".[dev]"
 ```
 
-### 3. Run Tests
-
-Before submitting a PR, ensure all tests pass:
-
-```bash
-pytest tests
-```
-
+3. Set up pre-commit hooks:
 ```bash
 pre-commit install
+```
+
+### Running Tests
+
+Run the full test suite:
+```bash
+pytest
+```
+
+### Code Quality
+
+Before committing, run:
+```bash
 pre-commit run -a
 ```
 
----
+This runs:
+- Black (code formatting)
+- Flake8 (linting)
+- isort (import sorting)
+- Type checking (if applicable)
 
-## ✅ Contribution Guidelines
+### Submitting Changes
 
-* **Use consistent code style.** Follow [PEP8](https://peps.python.org/pep-0008/) and run `black` and `flake8`.
-* **Write meaningful commits.** Describe *why* the change is made.
-* **Keep PRs focused.** Small, scoped changes are easier to review.
-* **Document clearly.** Use docstrings and comments for clarity.
-* **Test your code.** Add or update tests to cover your changes.
+1. Create a feature branch: `git checkout -b feature/your-feature-name`
+2. Make your changes
+3. Run tests: `pytest`
+4. Run pre-commit: `pre-commit run -a`
+5. Commit with clear messages
+6. Push and create a PR
 
-Working on compute nodes or model offloading?
+## Guidelines
 
-* Use the `examples/` directory to simulate training and inference.
-  * `distributed_example.py` demonstrates all node components working together.
+- Write tests for new features
+- Update documentation as needed
+- Follow existing code style
+- Keep PRs focused and atomic. Include:
+  * A brief summary of your change
+  * Related issue numbers (e.g., `Closes #42`)
+  * Any relevant logs, test output, or screenshots
 
----
+## Questions?
 
-## 📥 Submitting a Pull Request
-
-1. Fork the repo
-2. Create a branch
-3. Push your changes
-4. Open a PR on GitHub
-
-Include:
-
-* A brief summary of your change
-* Related issue numbers (e.g., `Closes #42`)
-* Any relevant logs, test output, or screenshots
+Join our [Discord](https://discord.gg/aCW2kTNzJ2) for development discussions!
