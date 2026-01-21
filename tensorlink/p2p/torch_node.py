@@ -888,9 +888,9 @@ class Torchnode(Smartnode):
         self._mpc_comms.join()
 
     def print_ui_status(self):
-        used_vram = self.total_gpu_memory - self.available_gpu_memory
         total_vram = self.total_gpu_memory
-        actual_vram = get_gpu_memory()
+        used_vram_est = total_vram - self.available_gpu_memory
+        used_vram_actual = total_vram - get_gpu_memory()
 
         ram = psutil.virtual_memory()
         used_ram = ram.total - ram.available
@@ -934,15 +934,19 @@ class Torchnode(Smartnode):
         # --- Resources ---
         print(sep)
 
-        vram_bar_estimate = _bar(total_vram - used_vram, total_vram)
-        vram_bar = _bar(total_vram - actual_vram, total_vram)
+        vram_bar_estimate = _bar(used_vram_est, total_vram)
+        vram_bar_actual = _bar(used_vram_actual, total_vram)
         ram_bar = _bar(used_ram, ram.total)
 
         print(
-            f"{ANSI.DIM}{'VRAM':<14}:{ANSI.RESET} "
+            f"{ANSI.DIM}{'VRAM EST.':<14}:{ANSI.RESET} "
             f"{ANSI.MAGENTA}[{vram_bar_estimate}]{ANSI.RESET} "
-            f"{ANSI.MAGENTA}[{vram_bar}]{ANSI.RESET} "
-            f"{ANSI.YELLOW}{_fmt_gb(used_vram)} / {_fmt_gb(total_vram)} GB{ANSI.RESET}"
+            f"{ANSI.YELLOW}{_fmt_gb(used_vram_est)} / {_fmt_gb(total_vram)} GB{ANSI.RESET}"
+        )
+        print(
+            f"{ANSI.DIM}{'VRAM ACT.':<14}:{ANSI.RESET} "
+            f"{ANSI.MAGENTA}[{vram_bar_actual}]{ANSI.RESET} "
+            f"{ANSI.YELLOW}{_fmt_gb(used_vram_actual)} / {_fmt_gb(total_vram)} GB{ANSI.RESET}"
         )
 
         print(

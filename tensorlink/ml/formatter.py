@@ -132,10 +132,6 @@ def normalize_generate_args(
     }
     if top_p is not None and do_sample:
         args["top_p"] = top_p
-    if getattr(request, "reasoning", None) is not None:
-        args["reasoning"] = request.reasoning
-    if getattr(request, "enable_thinking", None) is not None:
-        args["enable_thinking"] = request.enable_thinking
 
     # Filter based on allowed kwargs
     if allowed_generate_args is not None:
@@ -146,108 +142,121 @@ def normalize_generate_args(
     return args
 
 
-def extract_assistant_response(text: str, model_name: str = None) -> str:
+def extract_reasoning_and_answer(text: str):
     """
-    Universal extractor that removes system/user/thought tags and returns
-    the final human-readable assistant response.
+    Extract reasoning blocks and clean answer.
+    Returns (reasoning, answer)
     """
 
-    # Remove reasoning or hidden thought blocks (e.g. <think>...</think>)
-    text = re.sub(
-        r"<\s*(think|reflection|thought|internal|analysis)\s*>.*?<\s*/\1\s*>",
-        "",
+    reasoning_blocks = []
+
+    def _collect(match):
+        reasoning_blocks.append(match.group(0))
+        return ""
+
+    # Capture <think>, <analysis>, etc
+    cleaned = re.sub(
+        r"<\s*(think|reflection|thought|internal|analysis)\s*>(.*?)<\s*/\1\s*>",
+        lambda m: _collect(m),
         text,
         flags=re.DOTALL | re.IGNORECASE,
     )
 
-    # Remove common chat tags used by newer models
-    text = re.sub(r"<\|im_start\|>\s*\w+\s*", "", text)
-    text = re.sub(r"<\|im_end\|>", "", text)
-    text = re.sub(r"<\|assistant\|>", "", text)
-    text = re.sub(r"<\|user\|>", "", text)
-    text = re.sub(r"<\|system\|>", "", text)
+    reasoning = "\n\n".join(
+        re.sub(r"<[^>]+>", "", b).strip() for b in reasoning_blocks
+    ).strip()
 
-    # Strip out any prefixes like "assistant:" or "Assistant:"
-    text = re.sub(r"(?i)\bassistant\s*[:：]\s*", "", text)
+    # Clean scaffolding
+    cleaned = re.sub(r"<\|im_start\|>\s*\w+\s*", "", cleaned)
+    cleaned = re.sub(r"<\|im_end\|>", "", cleaned)
+    cleaned = re.sub(r"<\|assistant\|>", "", cleaned)
+    cleaned = re.sub(r"<\|user\|>", "", cleaned)
+    cleaned = re.sub(r"<\|system\|>", "", cleaned)
+    cleaned = re.sub(r"(?i)\bassistant\s*[:：]\s*", "", cleaned)
+    cleaned = re.sub(r"(?i)\b(system|user)\s*[:：]\s*", "", cleaned)
 
-    # Remove lingering system/user scaffolding
-    text = re.sub(r"(?i)\b(system|user)\s*[:：]\s*", "", text)
-    text = text.strip().replace("\r", "")
+    cleaned = cleaned.strip().replace("\r", "")
 
-    # If multiple paragraphs, prefer the last coherent chunk
-    # (models sometimes prepend hidden reasoning)
-    if "\n\n" in text:
-        parts = [p.strip() for p in text.split("\n\n") if len(p.strip()) > 10]
+    if "\n\n" in cleaned:
+        parts = [p.strip() for p in cleaned.split("\n\n") if len(p.strip()) > 10]
         if parts:
-            text = parts[-1]
+            cleaned = parts[-1]
 
-    # Fallback: if text still empty, just return as-is (safe default)
-    return text.strip() or "[No output produced]"
+    return reasoning, cleaned or "[No output produced]"
 
 
-def format_chat_prompt(model_name, current_message, history):
-    """Format the chat history and current message into a prompt suitable for the specified model."""
+def format_chat_prompt(model_name, current_message, history, enable_thinking=True):
+    """
+    Format the chat history and current message into a prompt suitable for
+    the specified model.
 
+    Args:
+        model_name: Name of the model
+        current_message: Current user message
+        history: Conversation history
+        enable_thinking: Whether to allow reasoning/thinking tokens
+    """
     # Different models require different formatting
     if "Qwen" in model_name:
-        # Qwen-specific formatting
         system_prompt = (
             "You are a helpful assistant. Respond directly to the user's questions."
         )
 
+        # Modify system prompt to discourage thinking if disabled
+        if not enable_thinking:
+            system_prompt += " Provide concise, direct answers without showing your reasoning process."
+
         formatted_prompt = f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
 
-        # Add conversation history
         if history and len(history) > 0:
             for msg in history:
                 role = msg["role"]
                 content = msg["content"]
                 formatted_prompt += f"<|im_start|>{role}\n{content}<|im_end|>\n"
 
-        # Add the current message
         formatted_prompt += f"<|im_start|>user\n{current_message}<|im_end|>\n"
         formatted_prompt += "<|im_start|>assistant\n"
 
         return formatted_prompt
 
     elif "llama" in model_name.lower():
-        # Llama-style formatting
         system_prompt = (
             "You are a helpful assistant. Respond directly to the user's questions."
         )
+
+        if not enable_thinking:
+            system_prompt += " Provide concise, direct answers without showing your reasoning process."
+
         formatted_prompt = f"<s>[INST] <<SYS>>\n{system_prompt}\n<</SYS>>\n\n"
 
-        # Add conversation history
         if history and len(history) > 0:
             for i, msg in enumerate(history):
                 if msg["role"] == "user":
                     if i > 0:
                         formatted_prompt += "[/INST]\n\n[INST] "
                     formatted_prompt += f"{msg['content']}"
-                else:  # assistant
+                else:
                     formatted_prompt += f" [/INST]\n\n{msg['content']}\n\n[INST] "
 
-        # Add the current message and prepare for response
         formatted_prompt += f"{current_message} [/INST]\n\n"
-
         return formatted_prompt
 
     else:
-        # Generic formatting for other models
         system_prompt = (
             "You are a helpful assistant. Respond directly to the user's questions."
         )
+
+        if not enable_thinking:
+            system_prompt += " Provide concise, direct answers without showing your reasoning process."
+
         formatted_prompt = f"System: {system_prompt}\n\n"
 
-        # Add conversation history
         if history and len(history) > 0:
             for msg in history:
                 role_prefix = "User: " if msg["role"] == "user" else "Assistant: "
                 formatted_prompt += f"{role_prefix}{msg['content']}\n\n"
 
-        # Add the current message
         formatted_prompt += f"User: {current_message}\n\nAssistant: "
-
         return formatted_prompt
 
 
@@ -304,6 +313,7 @@ class ResponseFormatter:
         prompt_tokens: int,
         completion_tokens: int,
         start_time: float,
+        reasoning_text: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Format a complete non-streaming response.
@@ -314,6 +324,7 @@ class ResponseFormatter:
             prompt_tokens: Number of tokens in the prompt
             completion_tokens: Number of tokens generated
             start_time: Generation start timestamp
+            reasoning_text: Extracted reasoning/thinking text (if any)
 
         Returns:
             Formatted response dict based on output_format
@@ -321,7 +332,7 @@ class ResponseFormatter:
         processing_time = time.time() - start_time
 
         if request.output_format == "openai":
-            return {
+            response = {
                 "id": str(request.id),
                 "object": "chat.completion",
                 "created": int(start_time),
@@ -340,9 +351,15 @@ class ResponseFormatter:
                 },
                 "processing_time": processing_time,
             }
+
+            # Add reasoning to message if present
+            if reasoning_text:
+                response["choices"][0]["message"]["reasoning"] = reasoning_text
+
+            return response
+
         elif request.output_format == "simple":
-            # Simple format with metadata
-            return {
+            response = {
                 "id": str(request.id),
                 "model": request.hf_name,
                 "text": output_text,
@@ -354,9 +371,18 @@ class ResponseFormatter:
                 "processing_time": processing_time,
                 "finish_reason": "stop",
             }
+
+            # Add reasoning as separate field if present
+            if reasoning_text:
+                response["reasoning"] = reasoning_text
+
+            return response
         else:
-            # Raw format - just the text (legacy compatibility)
-            return {"text": output_text}
+            # Raw format
+            response = {"text": output_text}
+            if reasoning_text:
+                response["reasoning"] = reasoning_text
+            return response
 
     @staticmethod
     def format_stream_chunk(
@@ -391,7 +417,6 @@ class ResponseFormatter:
                 ],
             }
         else:
-            # Simple streaming format
             chunk_data = {
                 "id": str(request.id),
                 "model": request.hf_name,
@@ -409,6 +434,7 @@ class ResponseFormatter:
         prompt_tokens: int,
         completion_tokens: int,
         full_text: Optional[str] = None,
+        reasoning_text: Optional[str] = None,
     ) -> str:
         """
         Format the final streaming chunk with usage stats.
@@ -436,6 +462,10 @@ class ResponseFormatter:
                     "total_tokens": prompt_tokens + completion_tokens,
                 },
             }
+
+            if reasoning_text:
+                final_data["reasoning"] = reasoning_text
+
             return f"data: {json.dumps(final_data)}\n\ndata: [DONE]\n\n"
         else:
             # Simple format final chunk
@@ -451,6 +481,9 @@ class ResponseFormatter:
             }
             if full_text is not None:
                 final_data["full_text"] = full_text
+
+            if reasoning_text:
+                final_data["reasoning"] = reasoning_text
 
             return f"data: {json.dumps(final_data)}\n\ndata: [DONE]\n\n"
 

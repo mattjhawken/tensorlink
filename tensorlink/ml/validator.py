@@ -1,4 +1,5 @@
 import inspect
+import re
 
 from tensorlink.ml.graphing import ModelParser
 from tensorlink.ml.worker import DistributedWorker
@@ -9,7 +10,7 @@ from tensorlink.ml.formatter import (
     format_chat_prompt,
     format_stream_chunk,
     format_stream_final,
-    extract_assistant_response,
+    extract_reasoning_and_answer,
 )
 from tensorlink.ml.utils import load_models_cache, save_models_cache
 from tensorlink.api.models import GenerationRequest
@@ -577,7 +578,13 @@ class DistributedValidator(DistributedWorker):
         # FORMAT PROMPT
         if request.input_format == "chat":
             formatted_prompt = format_chat_prompt(
-                request.hf_name, request.message, request.history
+                request.hf_name,
+                request.message,
+                request.history,
+                enable_thinking=(
+                    getattr(request, "enable_thinking", False)
+                    or getattr(request, "reasoning", False)
+                ),
             )
         else:
             formatted_prompt = request.message
@@ -585,13 +592,13 @@ class DistributedValidator(DistributedWorker):
         # TOKENIZE
         # Get model's max length
         model_max_length = getattr(tokenizer, 'model_max_length', 2048)
-        if model_max_length > 1000000:
+        if model_max_length > 100000:
             model_max_length = 2048
 
         # Tokenize with appropriate max_length
         max_length = min(
             getattr(request, 'max_length', 512),
-            model_max_length - 10,  # Leave room for generation
+            model_max_length - 10,
         )
 
         inputs = tokenizer(
@@ -628,7 +635,6 @@ class DistributedValidator(DistributedWorker):
         # GENERATE
         with torch.no_grad():
             try:
-                print(f"ARGS: {args}")
                 outputs = distributed_model.generate(
                     input_ids,
                     # max_new_tokens=args["max_new_tokens"],
@@ -660,9 +666,13 @@ class DistributedValidator(DistributedWorker):
         else:
             text = generated_text.strip()
 
-        # Clean for chat models
+        reasoning_text = None
         if request.input_format == "chat":
-            text = extract_assistant_response(text, request.hf_name)
+            reasoning_text, text = extract_reasoning_and_answer(text)
+
+            # Respect enable_thinking flag
+            if not getattr(request, "enable_thinking", True):
+                reasoning_text = None
 
         request.output = text
 
@@ -672,6 +682,7 @@ class DistributedValidator(DistributedWorker):
         request.formatted_response = ResponseFormatter.format_non_streaming_response(
             request=request,
             output_text=text,
+            reasoning_text=reasoning_text,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             start_time=start_time,
@@ -693,14 +704,20 @@ class DistributedValidator(DistributedWorker):
             # Format input
             if request.input_format == "chat":
                 formatted_prompt = format_chat_prompt(
-                    request.hf_name, request.message, request.history
+                    request.hf_name,
+                    request.message,
+                    request.history,
+                    enable_thinking=(
+                        getattr(request, "enable_thinking", False)
+                        or getattr(request, "reasoning", False)
+                    ),
                 )
             else:
                 formatted_prompt = request.message
 
             # Tokenize
             model_max_length = getattr(tokenizer, 'model_max_length', 2048)
-            if model_max_length > 1000000:
+            if model_max_length > 100000:
                 model_max_length = 2048
 
             max_length = min(getattr(request, 'max_length', 512), model_max_length - 10)
@@ -737,19 +754,17 @@ class DistributedValidator(DistributedWorker):
                 return
 
             # Build generation kwargs
-            generation_kwargs = {
-                "input_ids": input_ids,
-                "stream": True,
-                "max_new_tokens": args["max_new_tokens"],
-                "temperature": args["temperature"],
-                # "pad_token_id": args["pad_token_id"],
-                # "eos_token_id": args["eos_token_id"],
-                "do_sample": args["do_sample"],
-                "num_beams": args["num_beams"],
-            }
-
-            if "top_p" in args:
-                generation_kwargs["top_p"] = args["top_p"]
+            generation_kwargs = {"input_ids": input_ids, "stream": True, **args}
+            # generation_kwargs = {
+            #     "input_ids": input_ids,
+            #     "stream": True,
+            #     "max_new_tokens": args["max_new_tokens"],
+            #     "temperature": args["temperature"],
+            #     # "pad_token_id": args["pad_token_id"],
+            #     # "eos_token_id": args["eos_token_id"],
+            #     "do_sample": args["do_sample"],
+            #     "num_beams": args["num_beams"],
+            # }
 
             # Setup streamer
             if isinstance(distributed_model.model, OffloadedModule):
@@ -792,9 +807,11 @@ class DistributedValidator(DistributedWorker):
                     (request.id, {"chunk": formatted_chunk, "done": False}),
                 )
 
+            reasoning_text = None
+
             # Clean output
             if request.input_format == "chat":
-                cleaned_text = extract_assistant_response(full_text, request.hf_name)
+                cleaned_text = extract_reasoning_and_answer(full_text)
             else:
                 cleaned_text = full_text
 
