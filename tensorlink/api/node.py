@@ -195,6 +195,7 @@ class TensorlinkAPI:
                     input_format="chat",
                     output_format="openai",
                     do_sample=request.temperature > 0,
+                    is_chat_completion=True,
                 )
 
                 # Call generate endpoint

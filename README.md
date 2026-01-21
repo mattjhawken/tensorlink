@@ -169,21 +169,31 @@ Simple generation endpoint with flexible output formats.
 
 #### Request Parameters
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `hf_name` | string | *required* | Hugging Face model identifier |
-| `message` | string | *required* | Input text to generate from |
-| `prompt` | string | `null` | Alternative to `message` |
-| `model_type` | string | `"auto"` | Model architecture hint |
-| `max_length` | int | `2048` | Maximum total sequence length |
-| `max_new_tokens` | int | `2048` | Maximum tokens to generate |
-| `temperature` | float | `0.7` | Sampling temperature (0.01-2.0) |
-| `do_sample` | bool | `true` | Enable sampling vs greedy decode |
-| `num_beams` | int | `1` | Beam search width |
-| `stream` | bool | `false` | Enable streaming responses |
-| `input_format` | string | `"raw"` | `"chat"` or `"raw"` |
-| `output_format` | string | `"simple"` | `"simple"`, `"openai"`, or `"raw"` |
-| `history` | array | `null` | Chat history for multi-turn conversations |
+| Parameter            | Type   | Default    | Description                               |
+|----------------------|--------|------------|-------------------------------------------|
+| `hf_name`            | string | *required* | Hugging Face model identifier             |
+| `message`            | string | *required* | Input text to generate from               |
+| `prompt`             | string | `null`     | Alternative to `message`                  |
+| `model_type`         | string | `"auto"`   | Model architecture hint                   |
+| `max_length`         | int    | `2048`     | Maximum total sequence length             |
+| `max_new_tokens`     | int    | `2048`     | Maximum tokens to generate                |
+| `temperature`        | float  | `0.7`      | Sampling temperature (0.01-2.0)           |
+| `do_sample`          | bool   | `true`     | Enable sampling vs greedy decode          |
+| `num_beams`          | int    | `1`        | Beam search width                         |
+| `stream`             | bool   | `false`    | Enable streaming responses                |
+| `input_format`       | string | `"raw"`    | `"chat"` or `"raw"`                       |
+| `output_format`      | string | `"simple"` | `"simple"`, `"openai"`, or `"raw"`        |
+| `history`            | array  | `null`     | Chat history for multi-turn conversations |
+| `is_chat_completion` | bool   | `false`    | Determines whether to format chat output  |
+
+# In _generate_streaming:
+should_filter = request.is_chat_completion
+
+# Or if you want finer control:
+should_filter = (
+    request.is_chat_completion or 
+    (request.input_format == "chat" and request.output_format == "openai")
+)
 
 #### Example: Basic Generation
 

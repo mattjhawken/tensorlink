@@ -1,15 +1,17 @@
+import inspect
+
 from tensorlink.ml.graphing import ModelParser
 from tensorlink.ml.worker import DistributedWorker
 from tensorlink.ml.module import DistributedModel, OffloadedModule
-from tensorlink.ml.formatter import ResponseFormatter, normalize_generate_args
-from tensorlink.ml.utils import (
-    load_models_cache,
-    save_models_cache,
+from tensorlink.ml.formatter import (
+    ResponseFormatter,
+    normalize_generate_args,
     format_chat_prompt,
     format_stream_chunk,
     format_stream_final,
     extract_assistant_response,
 )
+from tensorlink.ml.utils import load_models_cache, save_models_cache
 from tensorlink.api.models import GenerationRequest
 
 from transformers import AutoTokenizer, TextIteratorStreamer
@@ -609,6 +611,7 @@ class DistributedValidator(DistributedWorker):
                 tokenizer,
                 prompt_tokens=prompt_tokens,
                 model_max_length=model_max_length,
+                allowed_generate_args=distributed_model._generate_args,
             )
 
         except ValueError as e:
@@ -719,6 +722,7 @@ class DistributedValidator(DistributedWorker):
                     tokenizer,
                     prompt_tokens=prompt_tokens,
                     model_max_length=model_max_length,
+                    allowed_generate_args=distributed_model._generate_args,
                 )
             except ValueError as e:
                 # Send error to stream

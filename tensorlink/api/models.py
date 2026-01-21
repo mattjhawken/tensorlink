@@ -29,13 +29,14 @@ class GenerationRequest(BaseModel):
     temperature: float = 0.7
     do_sample: bool = True
     num_beams: int = 1
+    reasoning: bool = False
 
     # Chat/history
     history: Optional[List[dict]] = None
 
     # Output fields
     output: str = None
-    formatted_response: Optional[Dict[str, Any]] = None  # ADD THIS
+    formatted_response: Optional[Dict[str, Any]] = None
 
     # Processing metadata
     processing: bool = False
@@ -46,6 +47,7 @@ class GenerationRequest(BaseModel):
     # Format control
     input_format: Literal["chat", "raw"] = "raw"
     output_format: Literal["simple", "openai", "raw"] = "simple"
+    is_chat_completion: bool = False
 
 
 class ChatMessage(BaseModel):

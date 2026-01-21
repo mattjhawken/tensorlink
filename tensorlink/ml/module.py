@@ -16,6 +16,7 @@ import torch.optim as optim
 import torch.nn as nn
 import threading
 import logging
+import inspect
 import pickle
 import torch
 import types
@@ -232,6 +233,7 @@ class DistributedModel(nn.Module):
         self.node_responses = self.node.node_responses
         self.mpc_lock = self.node.mpc_lock
         self._thread_local = threading.local()
+        self._generate_args = None
 
         self.hf_cache_dir = os.environ.get(
             'HF_HOME', os.path.join(os.path.expanduser('~'), '.cache', 'huggingface')
@@ -607,6 +609,15 @@ class DistributedModel(nn.Module):
 
         if self.model_name:
             self._load_model_skeleton(model_type)
+
+        sig = inspect.signature(self.generate)
+        if any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+        ):
+            # Accepts **kwargs, just mark as None or empty set
+            self._generate_args = None
+        else:
+            self._generate_args = set(sig.parameters.keys())
 
         grouped_layers = {}
         host_modules = {}

@@ -1,6 +1,7 @@
 from typing import Dict, Any, Optional
 import json
 import time
+import re
 
 
 def normalize_generate_args(
@@ -8,6 +9,7 @@ def normalize_generate_args(
     tokenizer,
     prompt_tokens: Optional[int] = None,
     model_max_length: Optional[int] = None,
+    allowed_generate_args: Optional[set] = None,
 ) -> Dict[str, Any]:
     """
     Normalize and validate generation arguments to prevent errors.
@@ -17,7 +19,7 @@ def normalize_generate_args(
         tokenizer: The tokenizer for the model
         prompt_tokens: Number of tokens in the prompt (if already computed)
         model_max_length: Maximum sequence length the model supports
-
+        allowed_generate_args: Generate function to get input args
     Returns:
         Dictionary of validated generation arguments
     """
@@ -119,7 +121,12 @@ def normalize_generate_args(
     if top_p is not None:
         top_p = max(0.0, min(top_p, 1.0))
 
-    # BUILD ARGS DICT
+    # OPTIONAL EXTENSIONS
+    reasoning = getattr(request, "reasoning", None)
+    enable_thinking = getattr(request, "enable_thinking", None)
+
+    # BUILD ARGS DICT and FILTER BY GENERATE SIGNATURE
+    # Build args dict as before
     args = {
         "pad_token_id": pad_token_id,
         "eos_token_id": eos_token_id,
@@ -128,11 +135,168 @@ def normalize_generate_args(
         "do_sample": do_sample,
         "num_beams": num_beams,
     }
-
     if top_p is not None and do_sample:
         args["top_p"] = top_p
+    if getattr(request, "reasoning", None) is not None:
+        args["reasoning"] = request.reasoning
+    if getattr(request, "enable_thinking", None) is not None:
+        args["enable_thinking"] = request.enable_thinking
+
+    # Filter based on allowed kwargs
+    if allowed_generate_args is not None:
+        if allowed_generate_args is not None:
+            if allowed_generate_args != None:
+                args = {k: v for k, v in args.items() if k in allowed_generate_args}
 
     return args
+
+
+def extract_assistant_response(text: str, model_name: str = None) -> str:
+    """
+    Universal extractor that removes system/user/thought tags and returns
+    the final human-readable assistant response.
+    """
+
+    # Remove reasoning or hidden thought blocks (e.g. <think>...</think>)
+    text = re.sub(
+        r"<\s*(think|reflection|thought|internal|analysis)\s*>.*?<\s*/\1\s*>",
+        "",
+        text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+
+    # Remove common chat tags used by newer models
+    text = re.sub(r"<\|im_start\|>\s*\w+\s*", "", text)
+    text = re.sub(r"<\|im_end\|>", "", text)
+    text = re.sub(r"<\|assistant\|>", "", text)
+    text = re.sub(r"<\|user\|>", "", text)
+    text = re.sub(r"<\|system\|>", "", text)
+
+    # Strip out any prefixes like "assistant:" or "Assistant:"
+    text = re.sub(r"(?i)\bassistant\s*[:：]\s*", "", text)
+
+    # Remove lingering system/user scaffolding
+    text = re.sub(r"(?i)\b(system|user)\s*[:：]\s*", "", text)
+    text = text.strip().replace("\r", "")
+
+    # If multiple paragraphs, prefer the last coherent chunk
+    # (models sometimes prepend hidden reasoning)
+    if "\n\n" in text:
+        parts = [p.strip() for p in text.split("\n\n") if len(p.strip()) > 10]
+        if parts:
+            text = parts[-1]
+
+    # Fallback: if text still empty, just return as-is (safe default)
+    return text.strip() or "[No output produced]"
+
+
+def format_chat_prompt(model_name, current_message, history):
+    """Format the chat history and current message into a prompt suitable for the specified model."""
+
+    # Different models require different formatting
+    if "Qwen" in model_name:
+        # Qwen-specific formatting
+        system_prompt = (
+            "You are a helpful assistant. Respond directly to the user's questions."
+        )
+
+        formatted_prompt = f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
+
+        # Add conversation history
+        if history and len(history) > 0:
+            for msg in history:
+                role = msg["role"]
+                content = msg["content"]
+                formatted_prompt += f"<|im_start|>{role}\n{content}<|im_end|>\n"
+
+        # Add the current message
+        formatted_prompt += f"<|im_start|>user\n{current_message}<|im_end|>\n"
+        formatted_prompt += "<|im_start|>assistant\n"
+
+        return formatted_prompt
+
+    elif "llama" in model_name.lower():
+        # Llama-style formatting
+        system_prompt = (
+            "You are a helpful assistant. Respond directly to the user's questions."
+        )
+        formatted_prompt = f"<s>[INST] <<SYS>>\n{system_prompt}\n<</SYS>>\n\n"
+
+        # Add conversation history
+        if history and len(history) > 0:
+            for i, msg in enumerate(history):
+                if msg["role"] == "user":
+                    if i > 0:
+                        formatted_prompt += "[/INST]\n\n[INST] "
+                    formatted_prompt += f"{msg['content']}"
+                else:  # assistant
+                    formatted_prompt += f" [/INST]\n\n{msg['content']}\n\n[INST] "
+
+        # Add the current message and prepare for response
+        formatted_prompt += f"{current_message} [/INST]\n\n"
+
+        return formatted_prompt
+
+    else:
+        # Generic formatting for other models
+        system_prompt = (
+            "You are a helpful assistant. Respond directly to the user's questions."
+        )
+        formatted_prompt = f"System: {system_prompt}\n\n"
+
+        # Add conversation history
+        if history and len(history) > 0:
+            for msg in history:
+                role_prefix = "User: " if msg["role"] == "user" else "Assistant: "
+                formatted_prompt += f"{role_prefix}{msg['content']}\n\n"
+
+        # Add the current message
+        formatted_prompt += f"User: {current_message}\n\nAssistant: "
+
+        return formatted_prompt
+
+
+def format_stream_final(request, start_time, prompt_tokens, token_count):
+    if request.output_format == "openai":
+        return {
+            "id": request.id,
+            "object": "chat.completion.chunk",
+            "created": int(start_time),
+            "model": request.hf_name,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": token_count,
+                "total_tokens": prompt_tokens + token_count,
+            },
+        }
+
+
+def format_stream_chunk(request, token_text, index, start_time):
+    """Format a single streaming token chunk"""
+    token_text = str(token_text)  # ensure it's always a string
+
+    if request.output_format == "openai":
+        return {
+            "id": request.id,
+            "object": "chat.completion.chunk",
+            "created": int(start_time),
+            "model": request.hf_name,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": token_text},
+                    "finish_reason": None,
+                }
+            ],
+        }
+    else:
+        return {
+            "id": request.id,
+            "token": token_text,
+            "index": index,
+            "done": False,
+        }
 
 
 class ResponseFormatter:
