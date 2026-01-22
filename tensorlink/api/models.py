@@ -27,7 +27,8 @@ class GenerationRequest(BaseModel):
     top_p: Optional[float] = None
     do_sample: Optional[bool] = None
     num_beams: Optional[int] = None
-    reasoning: Optional[bool] = None
+    reasoning: Optional[bool] = False
+    stream: bool = False
 
     prompt: str = None
     model_type: Optional[str] = "auto"
@@ -42,7 +43,6 @@ class GenerationRequest(BaseModel):
     # Processing metadata
     processing: bool = False
     id: int = None
-    stream: bool = False
     start_time: float = 0
 
     # Format control

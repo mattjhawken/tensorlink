@@ -140,9 +140,7 @@ def test_generate_openai(model_env):
     generate_payload = {
         "hf_name": cfg["name"],
         "message": "Hi there, tell me something interesting.",
-        "max_new_tokens": 10,
-        "do_sample": True,
-        "num_beams": 2,
+        # "max_new_tokens": 50,
         "output_format": "openai",
     }
 

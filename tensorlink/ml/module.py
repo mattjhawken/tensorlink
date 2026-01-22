@@ -610,15 +610,6 @@ class DistributedModel(nn.Module):
         if self.model_name:
             self._load_model_skeleton(model_type)
 
-        sig = inspect.signature(self.generate)
-        if any(
-            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
-        ):
-            # Accepts **kwargs, just mark as None or empty set
-            self._generate_args = None
-        else:
-            self._generate_args = set(sig.parameters.keys())
-
         grouped_layers = {}
         host_modules = {}
 

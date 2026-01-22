@@ -17,7 +17,7 @@ from tensorlink.nodes.worker_thread import WorkerThread
 class BaseNodeConfig:
     upnp: bool = True
     max_connections: int = 0
-    on_chain: bool = False
+    on_chain: bool = True
     local_test: bool = False
     print_level: int = logging.INFO
     priority_nodes: Optional[List[List[str]]] = None

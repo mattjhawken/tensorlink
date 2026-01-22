@@ -142,6 +142,22 @@ class RemoteStreamer:
             return token
 
 
+def _post_process_output(request, tokenizer, formatted_prompt, text):
+    # Remove prompt echo
+    if text.startswith(formatted_prompt):
+        text = text[len(formatted_prompt) :].strip()
+    else:
+        text = text.strip()
+
+    reasoning_text = None
+    if request.input_format == "chat":
+        reasoning_text, text = extract_reasoning_and_answer(text)
+        if not request.reasoning:
+            reasoning_text = None
+
+    return reasoning_text, text
+
+
 class DistributedValidator(DistributedWorker):
     def __init__(self, node, trusted=False, endpoint=True):
         super().__init__(node, trusted)
@@ -540,6 +556,56 @@ class DistributedValidator(DistributedWorker):
     #             "message": f"Model {model_name} is not loaded",
     #         }
 
+    def _prepare_generation(self, request, job_id):
+        distributed_model = self.models[job_id]
+        tokenizer = self.tokenizers[request.hf_name]
+
+        # FORMAT PROMPT
+        if request.input_format == "chat":
+            formatted_prompt = format_chat_prompt(
+                request.hf_name,
+                request.message,
+                request.history,
+                enable_thinking=request.reasoning,
+            )
+        else:
+            formatted_prompt = request.message
+
+        # TOKENIZE
+        model_max_length = getattr(tokenizer, "model_max_length", 2048)
+        if model_max_length > 100000:
+            model_max_length = 2048
+
+        max_length = getattr(request, "max_length", 512) or 512
+        max_length = min(max_length, model_max_length - 10)
+
+        inputs = tokenizer(
+            formatted_prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=max_length,
+        )
+
+        input_ids = inputs.input_ids.to(self.device)
+        prompt_tokens = input_ids.shape[1]
+
+        # NORMALIZE ARGS
+        args = normalize_generate_args(
+            request,
+            tokenizer,
+            prompt_tokens=prompt_tokens,
+            model_max_length=model_max_length,
+        )
+
+        return {
+            "distributed_model": distributed_model,
+            "tokenizer": tokenizer,
+            "formatted_prompt": formatted_prompt,
+            "input_ids": input_ids,
+            "prompt_tokens": prompt_tokens,
+            "args": args,
+        }
+
     def _handle_generate_request(self, request: GenerationRequest, job_id: str):
         """Main entry point for generate requests"""
         self._record_request(request.hf_name)
@@ -572,50 +638,8 @@ class DistributedValidator(DistributedWorker):
         Fetches tokenizer, ensures generate arguments are not problematic with
         normalize_generate_args, and calls DistributedModel.generate.
         """
-        distributed_model = self.models[job_id]
-        tokenizer = self.tokenizers[request.hf_name]
-
-        # FORMAT PROMPT
-        if request.input_format == "chat":
-            formatted_prompt = format_chat_prompt(
-                request.hf_name,
-                request.message,
-                request.history,
-                enable_thinking=request.reasoning,  # Use consistent field name
-            )
-        else:
-            formatted_prompt = request.message
-
-        # TOKENIZE
-        model_max_length = getattr(tokenizer, 'model_max_length', 2048)
-        if model_max_length > 100000:
-            model_max_length = 2048
-
-        max_length = min(
-            getattr(request, 'max_length', 512),
-            model_max_length - 10,
-        )
-
-        inputs = tokenizer(
-            formatted_prompt,
-            return_tensors="pt",
-            truncation=True,
-            max_length=max_length,
-        )
-
-        prompt_tokens = inputs.input_ids.shape[1]
-        input_ids = inputs.input_ids.to(self.device)
-
-        # NORMALIZE ARGS WITH PROMPT TOKEN COUNT
         try:
-            args = normalize_generate_args(
-                request,
-                tokenizer,
-                prompt_tokens=prompt_tokens,
-                model_max_length=model_max_length,
-                allowed_generate_args=distributed_model._generate_args,
-            )
-
+            ctx = self._prepare_generation(request, job_id)
         except ValueError as e:
             request.output = f"Error: {str(e)}"
             request.formatted_response = ResponseFormatter.format_error_response(
@@ -626,10 +650,16 @@ class DistributedValidator(DistributedWorker):
             )
             return
 
-        # GENERATE
+        distributed_model = ctx["distributed_model"]
+        tokenizer = ctx["tokenizer"]
+        formatted_prompt = ctx["formatted_prompt"]
+        input_ids = ctx["input_ids"]
+        prompt_tokens = ctx["prompt_tokens"]
+        args = ctx["args"]
+
         with torch.no_grad():
             try:
-                outputs = distributed_model.generate(input_ids)
+                outputs = distributed_model.generate(input_ids, **args)
             except RuntimeError as e:
                 error_msg = f"Generation failed: {str(e)}"
                 request.output = error_msg
@@ -641,27 +671,12 @@ class DistributedValidator(DistributedWorker):
                 )
                 return
 
-        # DECODE
-        generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-
-        # Remove prompt echo
-        if generated_text.startswith(formatted_prompt):
-            text = generated_text[len(formatted_prompt) :].strip()
-        else:
-            text = generated_text.strip()
-
-        reasoning_text = None
-        if request.input_format == "chat":
-            reasoning_text, text = extract_reasoning_and_answer(text)
-            print(reasoning_text)
-
-            # Respect reasoning flag - only include reasoning if explicitly enabled
-            if not request.reasoning:
-                reasoning_text = None
+        generated_text = tokenizer.decode(outputs[0])
+        reasoning_text, text = _post_process_output(
+            request, tokenizer, formatted_prompt, generated_text
+        )
 
         request.output = text
-
-        # COUNT TOKENS & FORMAT RESPONSE
         completion_tokens = len(tokenizer.encode(text, add_special_tokens=False))
 
         request.formatted_response = ResponseFormatter.format_non_streaming_response(
@@ -679,94 +694,64 @@ class DistributedValidator(DistributedWorker):
         normalize_generate_args, and calls DistributedModel.generate with stream.
         """
         try:
-            start_time = getattr(request, 'start_time', time.time())
-            distributed_model = self.models[job_id]
-            tokenizer = self.tokenizers[request.hf_name]
+            start_time = getattr(request, "start_time", time.time())
 
-            # Format input
-            if request.input_format == "chat":
-                formatted_prompt = format_chat_prompt(
-                    request.hf_name,
-                    request.message,
-                    request.history,
-                    enable_thinking=request.reasoning,  # Use consistent field name
-                )
-            else:
-                formatted_prompt = request.message
+            ctx = self._prepare_generation(request, job_id)
+            distributed_model = ctx["distributed_model"]
+            tokenizer = ctx["tokenizer"]
+            formatted_prompt = ctx["formatted_prompt"]
+            input_ids = ctx["input_ids"]
+            prompt_tokens = ctx["prompt_tokens"]
+            args = ctx["args"]
 
-            # Tokenize
-            model_max_length = getattr(tokenizer, 'model_max_length', 2048)
-            if model_max_length > 100000:
-                model_max_length = 2048
+            # ---- Build kwargs ----
+            generation_kwargs = {
+                "input_ids": input_ids,
+                **args,
+            }
 
-            max_length = min(getattr(request, 'max_length', 512), model_max_length - 10)
-
-            inputs = tokenizer(
-                formatted_prompt,
-                return_tensors="pt",
-                truncation=True,
-                max_length=max_length,
-            )
-
-            input_ids = inputs.input_ids.to(self.device)
-            prompt_tokens = input_ids.shape[1]
-
-            # Normalize args
-            try:
-                args = normalize_generate_args(
-                    request,
-                    tokenizer,
-                    prompt_tokens=prompt_tokens,
-                    model_max_length=model_max_length,
-                    allowed_generate_args=distributed_model._generate_args,
-                )
-            except ValueError as e:
-                error_chunk = ResponseFormatter.format_stream_error(
-                    error_message=str(e), error_type="prompt_too_long"
-                )
-                self.send_request(
-                    "update_stream",
-                    (request.id, {"done": True, "final_chunk": error_chunk}),
-                )
-                request.output = f"Error: {str(e)}"
-                return
-
-            # Build generation kwargs
-            generation_kwargs = {"input_ids": input_ids, "stream": True}
-
-            # Setup streamer
+            # ---- Setup streamer + thread ----
             if isinstance(distributed_model.model, OffloadedModule):
-                generation_kwargs.update(**args)
+                generation_kwargs["stream"] = True
+
                 module_id = distributed_model.model.module_id
                 streamer = RemoteStreamer(
                     poll_fn=lambda: self._poll_remote_token(module_id, tokenizer)
                 )
+
                 generation_thread = Thread(
-                    target=distributed_model.generate, kwargs=generation_kwargs
+                    target=distributed_model.generate,
+                    kwargs=generation_kwargs,
+                    daemon=True,
                 )
                 generation_thread.start()
+
             else:
                 streamer = TextIteratorStreamer(
                     tokenizer, skip_prompt=True, skip_special_tokens=True
                 )
-                generation_kwargs.pop("stream")
+
                 generation_kwargs["streamer"] = streamer
+
                 generation_thread = Thread(
-                    target=distributed_model.generate, kwargs=generation_kwargs
+                    target=distributed_model.generate,
+                    kwargs=generation_kwargs,
+                    daemon=True,
                 )
                 generation_thread.start()
 
-            # Stream tokens
+            # ---- Stream tokens ----
             full_text = ""
             token_count = 0
             in_reasoning_block = False
             reasoning_buffer = ""
+
             start_re = re.compile(
-                r'<\s*(think|reflection|thought|internal|analysis)\s*>',
+                r"<\s*(think|reflection|thought|internal|analysis)\s*>",
                 re.IGNORECASE,
             )
             end_re = re.compile(
-                r'<\s*/\s*(think|reflection|thought|internal|analysis)\s*>',
+                r"<\s*/\s*(think|reflection|thought|internal|analysis)\s*>",
                 re.IGNORECASE,
             )
 
@@ -775,26 +760,21 @@ class DistributedValidator(DistributedWorker):
 
                 if request.input_format == "chat" and not request.reasoning:
 
-                    # ENTER only if we're NOT already inside
                     if not in_reasoning_block:
                         if start_re.search(token_text):
-                            print(f"ENTERING REASON: {token_text}")
                             in_reasoning_block = True
                             reasoning_buffer = token_text
                             continue
-
-                    # EXIT only if we ARE inside
                     else:
                         reasoning_buffer += token_text
                         if end_re.search(reasoning_buffer):
-                            print(f"EXITING REASON: {token_text}")
                             in_reasoning_block = False
                             reasoning_buffer = ""
                         continue
 
-                # Only emit visible tokens when not in reasoning
                 if not in_reasoning_block:
                     token_count += 1
+
                     formatted_chunk = ResponseFormatter.format_stream_chunk(
                         request=request,
                         token_text=token_text,
@@ -807,20 +787,17 @@ class DistributedValidator(DistributedWorker):
                         (request.id, {"chunk": formatted_chunk, "done": False}),
                     )
 
+            # ---- Finalize ----
             reasoning_text = None
             cleaned_text = full_text
 
-            # Extract reasoning and clean output
             if request.input_format == "chat":
                 reasoning_text, cleaned_text = extract_reasoning_and_answer(full_text)
-
-                # Only include reasoning if explicitly enabled
                 if not request.reasoning:
                     reasoning_text = None
 
             request.output = cleaned_text
 
-            # Send final chunk
             final_chunk = ResponseFormatter.format_stream_final(
                 request=request,
                 start_time=start_time,
@@ -837,12 +814,15 @@ class DistributedValidator(DistributedWorker):
 
         except Exception as e:
             error_chunk = ResponseFormatter.format_stream_error(
-                error_message=str(e), error_type="generation_error"
+                error_message=str(e),
+                error_type="generation_error",
             )
+
             self.send_request(
                 "update_stream",
                 (request.id, {"done": True, "final_chunk": error_chunk}),
             )
+
             request.output = f"Error during generation: {str(e)}"
 
     def _poll_remote_token(self, module_id: str, tokenizer):
