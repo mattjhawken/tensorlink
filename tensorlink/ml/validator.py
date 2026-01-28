@@ -489,13 +489,12 @@ class DistributedValidator(DistributedWorker):
                             if not is_active:
                                 self._remove_hosted_job(job_id)
 
-                    self.CHECK_COUNTER = 1
-
                 if (
                     self.CHECK_COUNTER % self.GC_CHECK_INTERVAL * 20 == 0
                 ):  # less frequent than garbage collection
                     # Manage autoloaded models based on popularity (or DEFAULT_MODELS fallback)
                     self._manage_auto_loaded_models()
+                    self.CHECK_COUNTER = 1
 
                 if self.models_initializing:
                     # Only call model management if we have models actively initializing
@@ -911,6 +910,7 @@ class DistributedValidator(DistributedWorker):
                 "author": None,
                 "active": True,
                 "hosted": True,
+                "api": True,
                 "training": False,
                 "payment": payment,
                 "time": time_limit,
