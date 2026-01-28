@@ -521,9 +521,9 @@ class ValidatorThread(Torchnode):
             _time = job_info.get("time")
 
         job_data = job_info
-        job_data["time"] = _time
 
         if not job_data.get("id"):
+            job_data["time"] = _time
             job_id = hashlib.sha256(json.dumps(job_data).encode()).hexdigest()
             job_data["id"] = job_id
 
