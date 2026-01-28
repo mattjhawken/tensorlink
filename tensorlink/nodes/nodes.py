@@ -176,19 +176,28 @@ class BaseNode:
         """
         Gracefully shut down the role process and release resources.
         """
-        if self.node_process is not None and self.node_process.exitcode is None:
-            # Ask the role to stop cleanly first
-            response = self.send_request("stop", (None,), timeout=15)
-            if response:
-                self.node_process.join(timeout=15)
+        if self.node_process is not None:
+            # Signal process to stop
+            self._stop_event.set()
+
+            # Ask the role to stop cleanly first via IPC
+            try:
+                response = self.send_request("stop", (None,), timeout=10)
+                print(f"Stop request response: {response}")
+            except Exception as e:
+                print(f"Error sending stop request: {e}")
+
+            # Wait for graceful shutdown
+            self.node_process.join(timeout=10)
 
             # Force terminate if still alive
             if self.node_process.is_alive():
                 print("Forcing termination for node process.")
                 self.node_process.terminate()
+                self.node_process.join()
 
-            self.node_process.join()
             self.node_process = None
+            print("Node cleanup complete")
 
     def send_request(self, request_type, args, timeout=5):
         """

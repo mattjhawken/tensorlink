@@ -988,6 +988,8 @@ class ValidatorThread(Torchnode):
             time.sleep(1)
             counter += 1
 
+        self.stop()
+
     def stop(self):
         self.keeper.write_state()
         super().stop()

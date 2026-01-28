@@ -182,7 +182,10 @@ def run_worker_loop(worker, config):
 
     except KeyboardInterrupt:
         logging.info("Exiting...")
+        print("Exiting...")
+
     finally:
+        worker.cleanup()
         if mining_process:
             stop_mining(mining_process)
 
@@ -197,6 +200,10 @@ def run_validator_loop(validator):
 
     except KeyboardInterrupt:
         logging.info("Exiting...")
+        print("Exiting...")
+
+    finally:
+        validator.cleanup()
 
 
 def main():

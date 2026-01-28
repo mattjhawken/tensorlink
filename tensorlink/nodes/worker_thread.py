@@ -63,33 +63,6 @@ class WorkerThread(Torchnode):
 
         self.mining_active = mining_active
 
-        if self.on_chain:
-            self.public_key = get_key(".tensorlink.env", "PUBLIC_KEY")
-            if not self.public_key:
-                self.debug_print(
-                    "Public key not found in .env file, using donation wallet...",
-                    tag="Worker",
-                )
-                self.public_key = "0x1Bc3a15dfFa205AA24F6386D959334ac1BF27336"
-
-            self.dht.store(hashlib.sha256(b"ADDRESS").hexdigest(), self.public_key)
-
-        should_bootstrap = bool(self._priority_nodes) or self.on_chain
-        if should_bootstrap:
-            attempts = 0
-            while attempts < 3 and len(self.validators) == 0:
-                self.bootstrap()
-
-                if len(self.nodes) == 0:
-                    time.sleep(3)
-                    attempts += 1
-        else:
-            self.debug_print(
-                "Skipping bootstrap (no priority nodes and not on-chain).",
-                tag="Worker",
-                level=logging.INFO,
-            )
-
         # Finally, load up previous saved state if any
         if on_chain or load_previous_state:
             self.keeper.load_previous_state()
@@ -201,16 +174,47 @@ class WorkerThread(Torchnode):
         # Accept users and back-check history
         # Get proposees from SC and send our state to them
         super().run()
+        try:
+            if self.on_chain:
+                self.public_key = get_key(".tensorlink.env", "PUBLIC_KEY")
+                if not self.public_key:
+                    self.debug_print(
+                        "Public key not found in .env file, using donation wallet...",
+                        tag="Worker",
+                    )
+                    self.public_key = "0x1Bc3a15dfFa205AA24F6386D959334ac1BF27336"
 
-        counter = 0
-        while not self.terminate_flag.is_set():
-            if counter % 180 == 0:
-                self.keeper.clean_node()
-                self.clean_port_mappings()
-                self.print_ui_status()
+                self.dht.store(hashlib.sha256(b"ADDRESS").hexdigest(), self.public_key)
 
-            time.sleep(1)
-            counter += 1
+            should_bootstrap = bool(self._priority_nodes) or self.on_chain
+            if should_bootstrap:
+                attempts = 0
+                while attempts < 3 and len(self.validators) == 0:
+                    self.bootstrap()
+
+                    if len(self.nodes) == 0:
+                        time.sleep(3)
+                        attempts += 1
+            else:
+                self.debug_print(
+                    "Skipping bootstrap (no priority nodes and not on-chain).",
+                    tag="Worker",
+                    level=logging.INFO,
+                )
+
+            counter = 0
+            while not self.terminate_flag.is_set():
+                if counter % 180 == 0:
+                    self.keeper.clean_node()
+                    self.clean_port_mappings()
+                    self.print_ui_status()
+
+                time.sleep(1)
+                counter += 1
+        except KeyboardInterrupt:
+            pass
+
+        self.stop()
 
     def load_distributed_module(self, module: nn.Module, graph: dict = None):
         pass

@@ -572,29 +572,36 @@ class Torchnode(Smartnode):
         else:
             return_val = None
 
-        for module_id, module in self.modules.items():
-            # "mem_info" is added to module info upon initially receiving it
-            if "mem_info" in module:
-                # Return the module info to the ML process
-                if self.role == "V":
-                    if return_val.get("job_id") == module.get("job_id"):
-                        return_val["distribution"][module_id] = module["distribution"]
-                        return_val["model_name"] = module.get("model_name", "")
-                        return_val["optimizer"] = module["optimizer"]
-                        return_val["training"] = module["training"]
-                else:
-                    return_val = module
-                    return_val["module_id"] = module_id
+        try:
+            for module_id, module in self.modules.items():
+                # "mem_info" is added to module info upon initially receiving it
+                if "mem_info" in module:
+                    # Return the module info to the ML process
+                    if self.role == "V":
+                        if return_val.get("job_id") == module.get("job_id"):
+                            return_val["distribution"][module_id] = module[
+                                "distribution"
+                            ]
+                            return_val["model_name"] = module.get("model_name", "")
+                            return_val["optimizer"] = module["optimizer"]
+                            return_val["training"] = module["training"]
+                    else:
+                        return_val = module
+                        return_val["module_id"] = module_id
 
-                del module["mem_info"]
+                    del module["mem_info"]
 
-            # "termination" is added to module info when the job is closing
-            elif "termination" in module:
-                return_val = module_id
-                del self.modules[module_id]
-                break
+                # "termination" is added to module info when the job is closing
+                elif "termination" in module:
+                    return_val = module_id
+                    del self.modules[module_id]
+                    break
 
-        self.response_queue.put({"status": "SUCCESS", "return": return_val})
+            self.response_queue.put({"status": "SUCCESS", "return": return_val})
+
+        except Exception as e:
+            self._log_error(f"Error handling module: {e}")
+            self.response_queue.put({"status": "FAILURE", "return": None})
 
     def _handle_check_module_request(self, request):
         request_type, worker_id, module_id = request["args"]
@@ -776,16 +783,8 @@ class Torchnode(Smartnode):
         )
 
     def _handle_stop(self, request):
-        self.response_queue.put({"status": "SUCCESS", "return": True})
         self.terminate_flag.set()
-
-    def _handle_check_shutdown(self, request):
-        if self.terminate_flag.is_set():
-            self.response_queue.put({"status": "SUCCESS", "return": True})
-            t = threading.Thread(target=self._stop_mpc_comms)
-            t.start()
-        else:
-            self.response_queue.put({"status": "SUCCESS", "return": False})
+        self.response_queue.put({"status": "SUCCESS", "return": True})
 
     def _handle_debug_print(self, request):
         if len(request["args"]) == 1:
@@ -897,6 +896,13 @@ class Torchnode(Smartnode):
 
     def stop(self):
         super().stop()
+        self._stop_mpc_comms()
+
+    def _handle_check_shutdown(self, request):
+        if self.terminate_flag.is_set():
+            self.response_queue.put({"status": "SUCCESS", "return": True})
+        else:
+            self.response_queue.put({"status": "SUCCESS", "return": False})
 
     def _stop_mpc_comms(self):
         self.mpc_terminate_flag.set()
