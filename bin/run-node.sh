@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VENV_PATH="venv"
+VENV_PATH=".venv"
 
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 

@@ -17,7 +17,7 @@ from tensorlink.api.models import GenerationRequest
 
 from transformers import AutoTokenizer, TextIteratorStreamer
 from collections import defaultdict
-from threading import Thread, Lock
+from threading import Thread
 import torch
 import logging
 import inspect
@@ -161,9 +161,6 @@ class DistributedValidator(DistributedWorker):
         # Track reserved host memory during initialization
         self.host_memory_reserved = 0
         self.initializing_reservations = {}  # job_id -> reserved_memory
-
-        # Lock for thread-safe memory operations
-        self.memory_lock = Lock()
 
     def _ensure_model_entry(self, model_name: str):
         """Ensure a model has an entry in the cache with proper structure"""
@@ -1142,17 +1139,15 @@ class DistributedValidator(DistributedWorker):
 
     def _reserve_host_memory(self, job_id: str, amount: int):
         """Reserve host memory for a model being initialized"""
-        with self.memory_lock:
-            self.host_memory_reserved += amount
-            self.initializing_reservations[job_id] = amount
+        self.host_memory_reserved += amount
+        self.initializing_reservations[job_id] = amount
 
     def _release_host_memory(self, job_id: str):
         """Release reserved host memory when initialization completes or fails"""
-        with self.memory_lock:
-            if job_id in self.initializing_reservations:
-                reserved = self.initializing_reservations[job_id]
-                self.host_memory_reserved -= reserved
-                del self.initializing_reservations[job_id]
+        if job_id in self.initializing_reservations:
+            reserved = self.initializing_reservations[job_id]
+            self.host_memory_reserved -= reserved
+            del self.initializing_reservations[job_id]
 
     def _get_available_host_memory(self) -> int:
         """Get currently available host memory accounting for reservations"""
@@ -1164,9 +1159,8 @@ class DistributedValidator(DistributedWorker):
             )
 
         if self._hosting_enabled:
-            with self.memory_lock:
-                total_memory = min(get_gpu_memory(), max_vram_bytes)
-                available_memory += total_memory - self.host_memory_reserved
+            total_memory = min(get_gpu_memory(), max_vram_bytes)
+            available_memory += total_memory - self.host_memory_reserved
         return available_memory
 
     def _audit_memory_reservations(self):
@@ -1174,39 +1168,38 @@ class DistributedValidator(DistributedWorker):
         Audit memory reservations and clean up any orphaned reservations.
         Called periodically to prevent memory leaks from edge cases.
         """
-        with self.memory_lock:
-            # Find job_ids that have reservations but aren't in models or models_initializing
-            orphaned_reservations = []
+        # Find job_ids that have reservations but aren't in models or models_initializing
+        orphaned_reservations = []
 
-            for job_id in list(self.initializing_reservations.keys()):
-                if job_id not in self.models and job_id not in self.models_initializing:
-                    orphaned_reservations.append(job_id)
+        for job_id in list(self.initializing_reservations.keys()):
+            if job_id not in self.models and job_id not in self.models_initializing:
+                orphaned_reservations.append(job_id)
 
-            # Release orphaned reservations
-            for job_id in orphaned_reservations:
-                reserved = self.initializing_reservations[job_id]
-                self.host_memory_reserved -= reserved
-                del self.initializing_reservations[job_id]
+        # Release orphaned reservations
+        for job_id in orphaned_reservations:
+            reserved = self.initializing_reservations[job_id]
+            self.host_memory_reserved -= reserved
+            del self.initializing_reservations[job_id]
 
-                self.send_request(
-                    "debug_print",
-                    (
-                        f"Released orphaned reservation: {job_id} ({reserved / 1e9:.2f}GB)",
-                        "yellow",
-                        logging.WARNING,
-                    ),
-                )
+            self.send_request(
+                "debug_print",
+                (
+                    f"Released orphaned reservation: {job_id} ({reserved / 1e9:.2f}GB)",
+                    "yellow",
+                    logging.WARNING,
+                ),
+            )
 
-            if orphaned_reservations:
-                self.send_request(
-                    "debug_print",
-                    (
-                        f"Memory audit: Released {len(orphaned_reservations)} orphaned reservations. "
-                        f"Total reserved: {self.host_memory_reserved / 1e9:.2f}GB",
-                        "cyan",
-                        logging.INFO,
-                    ),
-                )
+        if orphaned_reservations:
+            self.send_request(
+                "debug_print",
+                (
+                    f"Memory audit: Released {len(orphaned_reservations)} orphaned reservations. "
+                    f"Total reserved: {self.host_memory_reserved / 1e9:.2f}GB",
+                    "cyan",
+                    logging.INFO,
+                ),
+            )
 
     def main_loop(self):
         self.check_node()
