@@ -281,7 +281,6 @@ class Worker(BaseNode):
             max_vram_gb=self._max_vram_gb,
         )
 
-        node.activate()
         node.run()
 
         # Keep process alive while the node thread is running

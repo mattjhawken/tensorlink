@@ -16,7 +16,6 @@ import asyncio
 import random
 import queue
 import time
-import json
 
 
 def build_hf_job_data(
@@ -52,6 +51,47 @@ def build_hf_job_data(
     }
 
 
+def _parse_chat_messages(messages):
+    """
+    Parse chat messages into system messages, history, and last user message.
+    Returns: (system_messages, history, last_user_message)
+    """
+    system_messages = []
+    conversation = []
+
+    for msg in messages:
+        if msg.role not in ("system", "user", "assistant"):
+            continue
+
+        if msg.role == "system":
+            system_messages.append(msg.content)
+        else:
+            conversation.append({"role": msg.role, "content": msg.content})
+
+    # Find last user message
+    last_user_message = None
+    last_user_idx = None
+
+    for idx in range(len(conversation) - 1, -1, -1):
+        if conversation[idx]["role"] == "user":
+            last_user_message = conversation[idx]["content"]
+            last_user_idx = idx
+            break
+
+    if last_user_message is None:
+        raise HTTPException(status_code=400, detail="No user message found")
+
+    # Build history (everything before the last user message)
+    history = conversation[:last_user_idx]
+
+    # Prepend system message to history if present
+    if system_messages:
+        combined_system = "\n".join(system_messages)
+        history.insert(0, {"role": "system", "content": combined_system})
+
+    return system_messages, history, last_user_message
+
+
 class TensorlinkAPI:
     def __init__(self, smart_node, host="0.0.0.0", port=64747):
         self.smart_node = smart_node
@@ -73,6 +113,16 @@ class TensorlinkAPI:
         self._start_server()
 
     def _define_routes(self):
+        """Register all API routes by delegating to specialized methods"""
+        self._register_generate_routes()
+        self._register_model_routes()
+        self._register_stats_routes()
+        self._register_network_routes()
+        self.app.include_router(self.router)
+
+    def _register_generate_routes(self):
+        """Register generation and chat completion endpoints"""
+
         @self.router.post("/v1/generate")
         async def generate(request: GenerationRequest):
             """Updated /v1/generate endpoint"""
@@ -82,18 +132,7 @@ class TensorlinkAPI:
                 request.output_format = getattr(request, "output_format", "simple")
 
                 # Log model request
-                current_time = time.time()
-                self.model_request_timestamps[request.hf_name].append(current_time)
-                cutoff = current_time - 300
-                self.model_request_timestamps[request.hf_name] = [
-                    ts
-                    for ts in self.model_request_timestamps[request.hf_name]
-                    if ts > cutoff
-                ]
-
-                if request.hf_name not in self.model_name_to_request:
-                    self.model_name_to_request[request.hf_name] = 1
-                self.model_name_to_request[request.hf_name] += 1
+                self._log_model_request(request.hf_name)
 
                 request.output = None
                 request_id = f"req_{hash(random.random())}"
@@ -150,39 +189,10 @@ class TensorlinkAPI:
                         status_code=400, detail="messages cannot be empty"
                     )
 
-                # Separate system messages from conversation
-                system_messages = []
-                conversation = []
-
-                for msg in request.messages:
-                    if msg.role not in ("system", "user", "assistant"):
-                        continue
-
-                    if msg.role == "system":
-                        system_messages.append(msg.content)
-                    else:
-                        conversation.append({"role": msg.role, "content": msg.content})
-
-                # Find last user message
-                last_user_message = None
-                last_user_idx = None
-
-                for idx in range(len(conversation) - 1, -1, -1):
-                    if conversation[idx]["role"] == "user":
-                        last_user_message = conversation[idx]["content"]
-                        last_user_idx = idx
-                        break
-
-                if last_user_message is None:
-                    raise HTTPException(status_code=400, detail="No user message found")
-
-                # Build history (everything before the last user message)
-                history = conversation[:last_user_idx]
-
-                # Prepend system message to history if present
-                if system_messages:
-                    combined_system = "\n".join(system_messages)
-                    history.insert(0, {"role": "system", "content": combined_system})
+                # Parse messages into system messages, history, and last user message
+                system_messages, history, last_user_message = _parse_chat_messages(
+                    request.messages
+                )
 
                 # Create GenerationRequest
                 gen_request = GenerationRequest(
@@ -206,6 +216,9 @@ class TensorlinkAPI:
                 raise
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
+
+    def _register_model_routes(self):
+        """Register model management endpoints"""
 
         @self.router.post("/request-model", response_model=ModelStatusResponse)
         def request_model(job_request: JobRequest, request: Request):
@@ -289,7 +302,7 @@ class TensorlinkAPI:
                 loading_models = []
 
                 # Query the node's worker for model status
-                response = self.smart_node.request_queue.put(
+                _ = self.smart_node.request_queue.put(
                     {"type": "get_loaded_models", "args": None}
                 )
 
@@ -310,6 +323,9 @@ class TensorlinkAPI:
                 }
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
+
+    def _register_stats_routes(self):
+        """Register statistics and monitoring endpoints"""
 
         @self.app.get("/stats")
         async def get_network_stats():
@@ -333,6 +349,9 @@ class TensorlinkAPI:
             Retrieve historical proposals from the node's archive cache.
             """
             return self.smart_node.keeper.get_proposals(limit=limit)
+
+    def _register_network_routes(self):
+        """Register network and node information endpoints"""
 
         @self.app.get("/node-info")
         async def get_node_info(node_id: str):
@@ -368,7 +387,20 @@ class TensorlinkAPI:
             """Get claim information for a specific worker node"""
             return self.smart_node.contract_manager.get_worker_claim_data(node_address)
 
-        self.app.include_router(self.router)
+    def _log_model_request(self, model_name: str):
+        """Log and track model requests for prioritization"""
+        current_time = time.time()
+        self.model_request_timestamps[model_name].append(current_time)
+
+        # Keep only requests from last 5 minutes
+        cutoff = current_time - 300
+        self.model_request_timestamps[model_name] = [
+            ts for ts in self.model_request_timestamps[model_name] if ts > cutoff
+        ]
+
+        if model_name not in self.model_name_to_request:
+            self.model_name_to_request[model_name] = 1
+        self.model_name_to_request[model_name] += 1
 
     async def _generate_stream(self, request, request_id, start_time):
         """Generator function for streaming tokens"""

@@ -173,8 +173,8 @@ class WorkerThread(Torchnode):
     def run(self):
         # Accept users and back-check history
         # Get proposees from SC and send our state to them
-        super().run()
         try:
+            super().run()
             if self.on_chain:
                 self.public_key = get_key(".tensorlink.env", "PUBLIC_KEY")
                 if not self.public_key:
@@ -212,9 +212,10 @@ class WorkerThread(Torchnode):
                 time.sleep(1)
                 counter += 1
         except KeyboardInterrupt:
-            pass
+            self.terminate_flag.set()
 
-        self.stop()
+        finally:
+            self.stop()
 
     def load_distributed_module(self, module: nn.Module, graph: dict = None):
         pass

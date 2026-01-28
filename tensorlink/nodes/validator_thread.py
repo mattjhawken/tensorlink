@@ -960,35 +960,39 @@ class ValidatorThread(Torchnode):
     #                 ]
 
     def run(self):
-        super().run()
+        try:
+            super().run()
 
-        if self.on_chain:
-            time.sleep(15)
-            self.execution_listener = threading.Thread(
-                target=self.contract_manager.proposal_creator, daemon=True
-            )
-            self.execution_listener.start()
-            self.proposal_listener = threading.Thread(
-                target=self.contract_manager.proposal_validator, daemon=True
-            )
-            self.proposal_listener.start()
+            if self.on_chain:
+                time.sleep(15)
+                self.execution_listener = threading.Thread(
+                    target=self.contract_manager.proposal_creator, daemon=True
+                )
+                self.execution_listener.start()
+                self.proposal_listener = threading.Thread(
+                    target=self.contract_manager.proposal_validator, daemon=True
+                )
+                self.proposal_listener.start()
 
-        counter = 0
-        # Loop for active job and network moderation
-        while not self.terminate_flag.is_set():
-            if counter % 300 == 0:
-                self.keeper.write_state()
-            if counter % 120 == 0:
-                self.keeper.clean_node()
-                self.clean_port_mappings()
-                self.get_workers()
-            if counter % 180 == 0:
-                self.print_ui_status()
+            counter = 0
+            # Loop for active job and network moderation
+            while not self.terminate_flag.is_set():
+                if counter % 300 == 0:
+                    self.keeper.write_state()
+                if counter % 120 == 0:
+                    self.keeper.clean_node()
+                    self.clean_port_mappings()
+                    self.get_workers()
+                if counter % 180 == 0:
+                    self.print_ui_status()
 
-            time.sleep(1)
-            counter += 1
+                time.sleep(1)
+                counter += 1
+        except KeyboardInterrupt:
+            self.terminate_flag.set()
 
-        self.stop()
+        finally:
+            self.stop()
 
     def stop(self):
         self.keeper.write_state()

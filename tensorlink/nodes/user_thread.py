@@ -469,26 +469,31 @@ class UserThread(Torchnode):
         # Get proposees from SC and send our state to them
         # If we are the next proposee, accept info from validators and only add info to the final state if there are
         # 2 or more of the identical info
-        super().run()
+        try:
+            super().run()
 
-        should_bootstrap = bool(self._priority_nodes) or self.on_chain
-        if should_bootstrap:
-            attempts = 0
-            while attempts < 3 and len(self.validators) == 0:
-                self.bootstrap()
+            should_bootstrap = bool(self._priority_nodes) or self.on_chain
+            if should_bootstrap:
+                attempts = 0
+                while attempts < 3 and len(self.validators) == 0:
+                    self.bootstrap()
 
-                if len(self.nodes) == 0:
-                    time.sleep(3)
-                    attempts += 1
-        else:
-            self.debug_print(
-                "Skipping bootstrap (no priority nodes and not on-chain).",
-                tag="Worker",
-                level=logging.INFO,
-            )
+                    if len(self.nodes) == 0:
+                        time.sleep(3)
+                        attempts += 1
+            else:
+                self.debug_print(
+                    "Skipping bootstrap (no priority nodes and not on-chain).",
+                    tag="Worker",
+                    level=logging.INFO,
+                )
 
-        while not self.terminate_flag.is_set():
-            # Handle job oversight, and inspect other jobs (includes job verification and reporting)
-            time.sleep(3)
+            while not self.terminate_flag.is_set():
+                # Handle job oversight, and inspect other jobs (includes job verification and reporting)
+                time.sleep(3)
 
-        self.stop()
+        except KeyboardInterrupt:
+            self.terminate_flag.set()
+
+        finally:
+            self.stop()
