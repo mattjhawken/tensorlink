@@ -182,8 +182,7 @@ class BaseNode:
 
             # Ask the role to stop cleanly first via IPC
             try:
-                response = self.send_request("stop", (None,), timeout=10)
-                print(f"Stop request response: {response}")
+                _ = self.send_request("stop", (None,), timeout=10)
             except Exception as e:
                 print(f"Error sending stop request: {e}")
 
@@ -197,7 +196,6 @@ class BaseNode:
                 self.node_process.join()
 
             self.node_process = None
-            print("Node cleanup complete")
 
     def send_request(self, request_type, args, timeout=5):
         """

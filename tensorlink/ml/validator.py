@@ -303,6 +303,7 @@ class DistributedValidator(DistributedWorker):
             desired_instances[model_name] = round(share * self.MAX_AUTO_MODELS)
 
         can_allocate = True
+
         # Ensure each model has at least one instance
         for model_name, desired in desired_instances.items():
             if not can_allocate:
@@ -324,6 +325,8 @@ class DistributedValidator(DistributedWorker):
                     ),
                 )
                 can_allocate = self._initialize_hosted_job(model_name)
+                if not can_allocate:
+                    break
 
         # Finalize any first-load initializations
         if self.models_initializing:
@@ -331,9 +334,6 @@ class DistributedValidator(DistributedWorker):
 
         # Allocate duplicates based on proportional demand
         for model_name, target_count in desired_instances.items():
-            if not can_allocate:
-                break
-
             current_total = len(self.public_models.get(model_name, []))
             current_total += sum(
                 1 if job_id in self.models_initializing else 0
@@ -355,6 +355,9 @@ class DistributedValidator(DistributedWorker):
 
                     if not can_allocate:
                         break
+
+            if not can_allocate:
+                break
 
         # Finalize any duplicate initializations
         if self.models_initializing:
@@ -488,7 +491,9 @@ class DistributedValidator(DistributedWorker):
 
                     self.CHECK_COUNTER = 1
 
-                if self.CHECK_COUNTER * 10 % self.GC_CHECK_INTERVAL == 0:
+                if (
+                    self.CHECK_COUNTER % self.GC_CHECK_INTERVAL * 20 == 0
+                ):  # less frequent than garbage collection
                     # Manage autoloaded models based on popularity (or DEFAULT_MODELS fallback)
                     self._manage_auto_loaded_models()
 
