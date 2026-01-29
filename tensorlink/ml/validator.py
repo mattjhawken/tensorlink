@@ -431,9 +431,10 @@ class DistributedValidator(DistributedWorker):
             ):
                 return {}
 
-            job_data["time"] = time.time()
-            job_id = hashlib.sha256(json.dumps(job_data).encode()).hexdigest()
-            job_data["id"] = job_id
+            if job_data.get("id") is None:
+                job_data["time"] = time.time()
+                job_id = hashlib.sha256(json.dumps(job_data).encode()).hexdigest()
+                job_data["id"] = job_id
 
             # Reserve the host memory this model will use
             host_memory_used = distribution.get("host_memory_used", 0)
