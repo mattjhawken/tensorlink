@@ -177,7 +177,7 @@ class Torchnode(Smartnode):
         return True
 
     def _handle_parameters_request(self, data: bytes):
-        self._log_debug("RECEIVED PARAMS REQUEST", tag="Torchnode")
+        self.debug_print("RECEIVED PARAMS REQUEST", tag="Torchnode", level=self.VERBOSE)
 
         # TODO Must ensure requesting node is indeed the master or an overseeing validator
         module_id = data[10:74].decode()
@@ -233,7 +233,11 @@ class Torchnode(Smartnode):
             size = int(data[8:eos])
 
             formatted_size = format_size(size)
-            self.debug_print(f"RECEIVED BACKWARD: {formatted_size}", tag="Torchnode")
+            self.debug_print(
+                f"RECEIVED BACKWARD: {formatted_size}",
+                tag="Torchnode",
+                level=self.VERBOSE,
+            )
 
             # TODO we must check that the forward received corresponds to a sent pass/specific module
             # must also do with backwards
@@ -255,7 +259,9 @@ class Torchnode(Smartnode):
         eos = data.find(b"::")
         size = int(data[7:eos])
         formatted_size = format_size(size)
-        self.debug_print(f"RECEIVED FORWARD: {formatted_size}", tag="Torchnode")
+        self.debug_print(
+            f"RECEIVED FORWARD: {formatted_size}", tag="Torchnode", level=self.VERBOSE
+        )
 
         # TODO we must check that the forward received corresponds to a sent pass/specific module
         # must also do with backwards
@@ -294,7 +300,7 @@ class Torchnode(Smartnode):
 
     def _handle_generate(self, data: bytes, node: Connection):
         # Received a forward pass
-        self.debug_print("RECEIVED GENERATE", tag="Torchnode")
+        self.debug_print("RECEIVED GENERATE", tag="Torchnode", level=self.VERBOSE)
 
         # Unpack data
         module_id_size = 64

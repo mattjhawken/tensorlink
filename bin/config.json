@@ -1,7 +1,7 @@
 {
   "config": {
     "node": {
-      "type": "validator",
+      "type": "worker",
       "mode": "public",
       "endpoint": true,
       "endpoint_url": "0.0.0.0",

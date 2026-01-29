@@ -534,14 +534,12 @@ class DistributedWorker:
         self,
         model_name: str,
         layer_paths: list[str],
-    ) -> dict[str, torch.Tensor]:
+        target_module: torch.nn.Module,
+    ) -> None:
         """
-        Load weights for a grouped LayerGroupModule and REMAP global layer indices
-        to local ModuleList indices (0..N-1).
+        Load weights for a grouped LayerGroupModule directly into the target
+        grouped layer module.
         """
-
-        state_dict: dict[str, torch.Tensor] = {}
-
         model_path = snapshot_download(
             repo_id=model_name,
             cache_dir=self.hf_cache_dir,
@@ -562,8 +560,15 @@ class DistributedWorker:
                 "No safetensors found; .bin fallback not implemented here"
             )
 
-        for shard_path in safetensor_files:
+        loaded_keys = []
+        missing_keys = set(target_module.state_dict().keys())
+
+        for shard_idx, shard_path in enumerate(safetensor_files):
+            logging.info(f"Loading shard {shard_idx + 1}/{len(safetensor_files)}")
+
             with safe_open(shard_path, framework="pt", device="cpu") as f:
+                shard_state_dict = {}
+
                 for key in f.keys():
                     for layer_prefix, local_idx in layer_prefix_to_local_idx.items():
                         full_prefix = layer_prefix + "."
@@ -576,10 +581,32 @@ class DistributedWorker:
                         # Remap to local ModuleList index
                         new_key = f"layers.{local_idx}.{subkey}"
 
-                        state_dict[new_key] = f.get_tensor(key)
+                        shard_state_dict[new_key] = f.get_tensor(key).to(self.device)
+                        loaded_keys.append(new_key)
+                        missing_keys.discard(new_key)
                         break
 
-        return state_dict
+                # Load this shard into the model
+                if shard_state_dict:
+                    target_module.load_state_dict(shard_state_dict, strict=False)
+
+                # Clear shard from memory
+                with self.memory_efficient_context():
+                    del shard_state_dict
+
+        if missing_keys:
+            self.send_request(
+                "debug_print",
+                (
+                    f"DistributedWorker -> Missing keys after loading: {missing_keys}",
+                    "yellow",
+                    logging.ERROR,
+                ),
+            )
+
+        logging.info(
+            f"Loaded {len(loaded_keys)} weight tensors across {len(safetensor_files)} shards"
+        )
 
     def _load_specific_layer_weights(
         self,
@@ -763,51 +790,20 @@ class DistributedWorker:
             loop_iterator_name,
         )
 
-        # CRITICAL: Aggressively cleanup skeleton immediately after extraction
-        # This is the key fix - cleanup happens as soon as we have the wrapper
-        del base_model
-        gc.collect()
-        if self.device.type == "cuda":
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
+        # Aggressively cleanup skeleton immediately after extraction
+        with self.memory_efficient_context():
+            del base_model
 
-        # Convert grouped module to empty tensors on CPU
-        # This removes any weight data that might have been copied from skeleton
+        # Convert grouped module to empty tensors on CPU to clear any weight references
         grouped_module = grouped_module.to_empty(device="cpu")
 
-        # Another cleanup pass to ensure skeleton is gone
+        # Another cleanup pass
         with self.memory_efficient_context():
             pass
 
         # Now load only the weights for the assigned layers
         logging.info(f"Loading weights for layers {layer_range[0]}-{layer_range[1]}")
-        state_dict = self._load_grouped_layer_weights(
-            model_name,
-            layer_paths,
-        )
-
-        # Load the state dict into the grouped module
-        missing_keys, unexpected_keys = grouped_module.load_state_dict(
-            state_dict, strict=False
-        )
-
-        if missing_keys:
-            self.send_request(
-                "debug_print",
-                (
-                    f"DistributedWorker -> Error loading grouped module weights on model: {model_name}"
-                    f"\n Module: {layer_paths}\n Missing keys: {missing_keys}\n Unexpected keys: {unexpected_keys}",
-                    "bright_red",
-                    logging.CRITICAL,
-                ),
-            )
-
-        # Clean up state dict before GPU transfer
-        with self.memory_efficient_context():
-            del state_dict
-
-        # Move to device
-        grouped_module = grouped_module.to(self.device)
+        self._load_grouped_layer_weights(model_name, layer_paths, grouped_module)
 
         logging.info(f"Successfully loaded {len(layer_paths)} layers with weights")
 

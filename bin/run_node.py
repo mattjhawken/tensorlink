@@ -81,12 +81,16 @@ def setup_logging(config):
     level_str = config.get("node", {}).get("logging", "INFO").upper()
 
     if not hasattr(logging, level_str):
-        raise ValueError(
-            f"Invalid logging level '{level_str}'. "
-            f"Must be one of: CRITICAL, ERROR, WARNING, INFO, DEBUG, NOTSET"
-        )
+        if level_str == "VERBOSE":
+            log_level = 5
+        else:
+            raise ValueError(
+                f"Invalid logging level '{level_str}'. "
+                f"Must be one of: CRITICAL, ERROR, WARNING, INFO, DEBUG, NOTSET"
+            )
+    else:
+        log_level = getattr(logging, level_str)
 
-    log_level = getattr(logging, level_str)
     logging.basicConfig(level=log_level)
 
     return log_level
