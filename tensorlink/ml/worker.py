@@ -139,6 +139,11 @@ def _load_model_skeleton(model_name: str, module_id: str, model_type: str = "cha
             skeleton_model = AutoModel.from_config(model_config)
 
     skeleton_model.eval()  # Set to eval mode initially
+
+    # Ensure no cached gradients or cached computations
+    for param in skeleton_model.parameters():
+        param.requires_grad = False
+
     return skeleton_model
 
 
@@ -747,19 +752,8 @@ class DistributedWorker:
             f"Loading grouped layers {layer_range[0]}-{layer_range[1]} from {model_name}"
         )
 
-        # Adjust layer paths if they include module_path prefix
-        adjusted_layer_paths = []
-        for layer_path in layer_paths:
-            # If base_model is the submodule, layer paths should be relative to it
-            # eg 'model.layers.0' -> 'layers.0'
-
-            # Check if layer_path starts with 'model.'
-            if layer_path.startswith('model.'):
-                adjusted_layer_paths.append(layer_path[6:])
-            else:
-                adjusted_layer_paths.append(layer_path)
-
-        # Create the layer group wrapper with empty weights
+        # Create the layer group wrapper with the skeleton's layers
+        # Extract references quickly before cleanup
         grouped_module = _create_layer_group_wrapper(
             base_model,
             layer_paths,
@@ -769,12 +763,21 @@ class DistributedWorker:
             loop_iterator_name,
         )
 
-        # Get name of model for loading weights
-        base_model_prefix = getattr(base_model, "base_model_prefix", None)
+        # CRITICAL: Aggressively cleanup skeleton immediately after extraction
+        # This is the key fix - cleanup happens as soon as we have the wrapper
+        del base_model
+        gc.collect()
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
 
-        # Aggressive cleanup before loading weights
+        # Convert grouped module to empty tensors on CPU
+        # This removes any weight data that might have been copied from skeleton
+        grouped_module = grouped_module.to_empty(device="cpu")
+
+        # Another cleanup pass to ensure skeleton is gone
         with self.memory_efficient_context():
-            del base_model
+            pass
 
         # Now load only the weights for the assigned layers
         logging.info(f"Loading weights for layers {layer_range[0]}-{layer_range[1]}")
@@ -784,7 +787,6 @@ class DistributedWorker:
         )
 
         # Load the state dict into the grouped module
-        grouped_module = grouped_module.to_empty(device="cpu")
         missing_keys, unexpected_keys = grouped_module.load_state_dict(
             state_dict, strict=False
         )
