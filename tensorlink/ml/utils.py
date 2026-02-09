@@ -108,7 +108,7 @@ def estimate_memory(
             )
 
     # ---- overhead ----
-    OVERHEAD = 1.30
+    OVERHEAD = 1.20
     total = sum(breakdown.values()) * OVERHEAD
 
     return total, breakdown

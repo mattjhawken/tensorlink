@@ -1,11 +1,9 @@
 import gc
-import importlib
 import inspect
 import json
 import logging
 import os
 import pickle
-import io
 import time
 import glob
 from contextlib import contextmanager
@@ -231,9 +229,17 @@ class DistributedWorker:
             total_memory = torch.cuda.get_device_properties(0).total_memory
 
             # Log CUDA configuration
-            logging.info(f"CUDA device: {torch.cuda.get_device_name(0)}")
-            logging.info(f"CUDA capability: {torch.cuda.get_device_capability(0)}")
-            logging.info(f"Total CUDA memory: {total_memory / 1e9:.2f} GB")
+            self.send_request(
+                "debug_print",
+                (
+                    "DistributedWorker -> "
+                    f"CUDA device: {torch.cuda.get_device_name(0)}\n"
+                    f"CUDA capability: {torch.cuda.get_device_capability(0)}\n"
+                    f"Total CUDA memory: {total_memory / 1e9:.2f}GB\n",
+                    "blue",
+                    logging.INFO,
+                ),
+            )
 
     def send_request(self, request_type, args, timeout=None):
         """Send request to coordinator node with timeout handling"""
@@ -548,7 +554,6 @@ class DistributedWorker:
         )
 
         # Map full HF layer prefix → local index
-        # "model.layers.12" -> 0
         layer_prefix_to_local_idx = {
             layer_path: i for i, layer_path in enumerate(layer_paths)
         }
@@ -564,11 +569,18 @@ class DistributedWorker:
         missing_keys = set(target_module.state_dict().keys())
 
         for shard_idx, shard_path in enumerate(safetensor_files):
-            logging.info(f"Loading shard {shard_idx + 1}/{len(safetensor_files)}")
+            self.send_request(
+                "debug_print",
+                (
+                    f"DistributedWorker -> Loading shard {shard_idx + 1}/{len(safetensor_files)}",
+                    "blue",
+                    logging.INFO,
+                ),
+            )
 
-            with safe_open(shard_path, framework="pt", device="cpu") as f:
-                shard_state_dict = {}
+            shard_state_dict = {}
 
+            with safe_open(shard_path, framework="pt", device=str(self.device)) as f:
                 for key in f.keys():
                     for layer_prefix, local_idx in layer_prefix_to_local_idx.items():
                         full_prefix = layer_prefix + "."
@@ -581,7 +593,7 @@ class DistributedWorker:
                         # Remap to local ModuleList index
                         new_key = f"layers.{local_idx}.{subkey}"
 
-                        shard_state_dict[new_key] = f.get_tensor(key).to(self.device)
+                        shard_state_dict[new_key] = f.get_tensor(key)
                         loaded_keys.append(new_key)
                         missing_keys.discard(new_key)
                         break
@@ -604,8 +616,14 @@ class DistributedWorker:
                 ),
             )
 
-        logging.info(
-            f"Loaded {len(loaded_keys)} weight tensors across {len(safetensor_files)} shards"
+        self.send_request(
+            "debug_print",
+            (
+                "DistributedWorker -> "
+                f"Loaded {len(loaded_keys)} weight tensors across {len(safetensor_files)} shards",
+                "blue",
+                logging.INFO,
+            ),
         )
 
     def _load_specific_layer_weights(
@@ -625,7 +643,14 @@ class DistributedWorker:
 
         try:
             # Use snapshot_download for efficient caching
-            logging.info(f"Checking cache for {model_name}")
+            self.send_request(
+                "debug_print",
+                (
+                    f"DistributedWorker -> Checking cache for {model_name}",
+                    "blue",
+                    logging.INFO,
+                ),
+            )
             model_path = snapshot_download(
                 repo_id=model_name,
                 cache_dir=self.hf_cache_dir,
@@ -637,19 +662,40 @@ class DistributedWorker:
                 ignore_patterns=["*.msgpack", "*.h5", "*.ot"],
                 local_files_only=False,
             )
-            logging.info(f"Model located at: {model_path}")
+            self.send_request(
+                "debug_print",
+                (
+                    f"DistributedWorker -> Model located at: {model_path}",
+                    "blue",
+                    logging.INFO,
+                ),
+            )
 
             # Find all safetensors files
             safetensor_files = glob.glob(os.path.join(model_path, "*.safetensors"))
 
             if safetensor_files:
-                logging.info(f"Found {len(safetensor_files)} safetensors files")
+                self.send_request(
+                    "debug_print",
+                    (
+                        f"DistributedWorker -> Found {len(safetensor_files)} safetensors files",
+                        "blue",
+                        logging.INFO,
+                    ),
+                )
 
                 # Load only specific layers
                 layer_path_to_idx = {path: idx for idx, path in enumerate(layer_paths)}
 
                 for shard_path in safetensor_files:
-                    logging.info(f"Reading weights from {os.path.basename(shard_path)}")
+                    self.send_request(
+                        "debug_print",
+                        (
+                            f"DistributedWorker -> Reading weights from {os.path.basename(shard_path)}",
+                            "blue",
+                            logging.INFO,
+                        ),
+                    )
 
                     with safe_open(shard_path, framework="pt", device="cpu") as f:
                         keys_loaded = 0
@@ -672,38 +718,39 @@ class DistributedWorker:
                                     break
 
                         if keys_loaded > 0:
-                            logging.info(
-                                f"  Loaded {keys_loaded} tensors from this shard"
+                            self.send_request(
+                                "debug_print",
+                                (
+                                    f"DistributedWorker -> Loaded {keys_loaded} tensors from this shard",
+                                    "blue",
+                                    logging.INFO,
+                                ),
                             )
 
-                logging.info(
-                    f"Total: Loaded {len(state_dict)} weight tensors for {len(layer_paths)} layers"
+                    if self.device == "cuda":
+                        torch.cuda.empty_cache()
+                    gc.collect()
+
+                self.send_request(
+                    "debug_print",
+                    (
+                        f"DistributedWorker -> Total: Loaded {len(state_dict)} weight tensors for {len(layer_paths)} layers",
+                        "blue",
+                        logging.INFO,
+                    ),
                 )
 
             else:
                 # Fallback: use pytorch_model.bin files
-                logging.info("No safetensors found, trying pytorch_model.bin")
-                bin_files = glob.glob(os.path.join(model_path, "pytorch_model*.bin"))
-
-                if bin_files:
-                    for bin_path in bin_files:
-                        logging.info(f"Loading from {os.path.basename(bin_path)}")
-                        shard_dict = torch.load(bin_path, map_location="cpu")
-
-                        # Load only matching keys
-                        for key, value in shard_dict.items():
-                            for layer_path in layer_paths:
-                                layer_prefix = layer_path + '.'
-                                if key.startswith(layer_prefix):
-                                    new_key = key[len(layer_prefix) :]
-                                    if single and '.' in new_key:
-                                        new_key = new_key.split('.', 1)[1]
-                                    state_dict[new_key] = value
-                                    break
-
-                    logging.info(f"Loaded {len(state_dict)} tensors from .bin files")
-                else:
-                    raise ValueError(f"No weight files found in {model_path}")
+                self.send_request(
+                    "debug_print",
+                    (
+                        f"DistributedWorker -> No safetensors found, trying pytorch_model.bin",
+                        "yellow",
+                        logging.ERROR,
+                    ),
+                )
+                raise ValueError(f"No weight files found in {model_path}")
 
         except Exception as e:
             logging.error(f"Error loading weights: {e}")
@@ -775,8 +822,13 @@ class DistributedWorker:
         if not layer_paths:
             raise ValueError("layer_paths must be provided for grouped layer loading")
 
-        logging.info(
-            f"Loading grouped layers {layer_range[0]}-{layer_range[1]} from {model_name}"
+        self.send_request(
+            "debug_print",
+            (
+                f"DistributedWorker -> Loading grouped layers {layer_range[0]}-{layer_range[1]} from {model_name}",
+                "blue",
+                logging.INFO,
+            ),
         )
 
         # Create the layer group wrapper with the skeleton's layers
@@ -802,12 +854,26 @@ class DistributedWorker:
             pass
 
         # Now load only the weights for the assigned layers
-        logging.info(f"Loading weights for layers {layer_range[0]}-{layer_range[1]}")
+        self.send_request(
+            "debug_print",
+            (
+                f"DistributedWorker -> Loading weights for layers {layer_range[0]}-{layer_range[1]}",
+                "blue",
+                logging.INFO,
+            ),
+        )
         self._load_grouped_layer_weights(model_name, layer_paths, grouped_module)
 
         grouped_module.to(self.device)
 
-        logging.info(f"Successfully loaded {len(layer_paths)} layers with weights")
+        self.send_request(
+            "debug_print",
+            (
+                f"DistributedWorker -> Successfully loaded {len(layer_paths)} layers with weights",
+                "blue",
+                logging.INFO,
+            ),
+        )
 
         return grouped_module
 
@@ -822,10 +888,24 @@ class DistributedWorker:
         module_class_name = module_info.get('module', '')
         module_id = module_info.get("module_id")
 
-        logging.info(f"Loading single module {module_class_name} from {model_name}")
+        self.send_request(
+            "debug_print",
+            (
+                f"DistributedWorker -> Loading single module {module_class_name} from {model_name}",
+                "blue",
+                logging.INFO,
+            ),
+        )
 
         if parent_module_path == "":
-            logging.info("Parent module is entire model — loading full model.")
+            self.send_request(
+                "debug_print",
+                (
+                    f"DistributedWorker -> Parent module is entire model — loading full model.",
+                    "blue",
+                    logging.INFO,
+                ),
+            )
 
             # aggressive cleanup before full model load
             if module_id in self.modules:
@@ -839,10 +919,8 @@ class DistributedWorker:
 
         # Extract the specific module with empty weights
         if parent_module_path and parent_module_path != "model":
-            # explicit path provided
             target_module = get_nested_module(base_model, parent_module_path)
             effective_layer_path = parent_module_path
-
         else:
             # parent_module_path is 'model' or empty -> try to find by class name
             effective_layer_path = _find_module_path_by_class(
@@ -859,7 +937,14 @@ class DistributedWorker:
         base_model_prefix = getattr(base_model, "base_model_prefix", None)
 
         # Load only the weights for this specific module
-        logging.info(f"Loading weights for {parent_module_path}")
+        self.send_request(
+            "debug_print",
+            (
+                f"DistributedWorker -> Loading weights for {parent_module_path}",
+                "blue",
+                logging.INFO,
+            ),
+        )
 
         state_dict = self._load_specific_layer_weights(
             model_name,
@@ -892,7 +977,14 @@ class DistributedWorker:
         # Move to device
         target_module = target_module.to(self.device)
 
-        logging.info(f"Successfully loaded single module {module_class_name}")
+        self.send_request(
+            "debug_print",
+            (
+                f"DistributedWorker -> Successfully loaded single module {module_class_name}",
+                "blue",
+                logging.INFO,
+            ),
+        )
         return target_module
 
     def _load_full_model(self, model_name: str, module_info: dict) -> torch.nn.Module:
@@ -917,7 +1009,14 @@ class DistributedWorker:
                 # For single GPU, load to CPU first then move
                 load_kwargs["device_map"] = "cpu"
 
-            logging.info(f"Loading full model {model_name} with type {model_type}")
+            self.send_request(
+                "debug_print",
+                (
+                    f"DistributedWorker -> Loading full model {model_name} with type {model_type}",
+                    "blue",
+                    logging.INFO,
+                ),
+            )
 
             # Load model based on type
             if model_type in ("causal", "chat"):
@@ -947,7 +1046,14 @@ class DistributedWorker:
             with self.memory_efficient_context():
                 final_model = final_model.to(self.device)
 
-        logging.info(f"Successfully loaded full model {model_name}")
+        self.send_request(
+            "debug_print",
+            (
+                f"DistributedWorker -> Successfully loaded full model {model_name}",
+                "blue",
+                logging.INFO,
+            ),
+        )
         return final_model
 
     def process_state_update(self, module_id, state_update):
