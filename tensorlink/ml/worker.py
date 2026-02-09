@@ -237,7 +237,7 @@ class DistributedWorker:
                     f"CUDA capability: {torch.cuda.get_device_capability(0)}\n"
                     f"Total CUDA memory: {total_memory / 1e9:.2f}GB\n",
                     "blue",
-                    logging.INFO,
+                    logging.DEBUG,
                 ),
             )
 
@@ -574,7 +574,7 @@ class DistributedWorker:
                 (
                     f"DistributedWorker -> Loading shard {shard_idx + 1}/{len(safetensor_files)}",
                     "blue",
-                    logging.INFO,
+                    logging.DEBUG,
                 ),
             )
 
@@ -622,7 +622,7 @@ class DistributedWorker:
                 "DistributedWorker -> "
                 f"Loaded {len(loaded_keys)} weight tensors across {len(safetensor_files)} shards",
                 "blue",
-                logging.INFO,
+                logging.DEBUG,
             ),
         )
 
@@ -648,7 +648,7 @@ class DistributedWorker:
                 (
                     f"DistributedWorker -> Checking cache for {model_name}",
                     "blue",
-                    logging.INFO,
+                    logging.DEBUG,
                 ),
             )
             model_path = snapshot_download(
@@ -667,7 +667,7 @@ class DistributedWorker:
                 (
                     f"DistributedWorker -> Model located at: {model_path}",
                     "blue",
-                    logging.INFO,
+                    logging.DEBUG,
                 ),
             )
 
@@ -680,7 +680,7 @@ class DistributedWorker:
                     (
                         f"DistributedWorker -> Found {len(safetensor_files)} safetensors files",
                         "blue",
-                        logging.INFO,
+                        logging.DEBUG,
                     ),
                 )
 
@@ -693,7 +693,7 @@ class DistributedWorker:
                         (
                             f"DistributedWorker -> Reading weights from {os.path.basename(shard_path)}",
                             "blue",
-                            logging.INFO,
+                            logging.DEBUG,
                         ),
                     )
 
@@ -723,7 +723,7 @@ class DistributedWorker:
                                 (
                                     f"DistributedWorker -> Loaded {keys_loaded} tensors from this shard",
                                     "blue",
-                                    logging.INFO,
+                                    logging.DEBUG,
                                 ),
                             )
 
@@ -736,7 +736,7 @@ class DistributedWorker:
                     (
                         f"DistributedWorker -> Total: Loaded {len(state_dict)} weight tensors for {len(layer_paths)} layers",
                         "blue",
-                        logging.INFO,
+                        logging.DEBUG,
                     ),
                 )
 
@@ -827,7 +827,7 @@ class DistributedWorker:
             (
                 f"DistributedWorker -> Loading grouped layers {layer_range[0]}-{layer_range[1]} from {model_name}",
                 "blue",
-                logging.INFO,
+                logging.DEBUG,
             ),
         )
 
@@ -859,19 +859,17 @@ class DistributedWorker:
             (
                 f"DistributedWorker -> Loading weights for layers {layer_range[0]}-{layer_range[1]}",
                 "blue",
-                logging.INFO,
+                logging.DEBUG,
             ),
         )
         self._load_grouped_layer_weights(model_name, layer_paths, grouped_module)
-
-        grouped_module.to(self.device)
 
         self.send_request(
             "debug_print",
             (
                 f"DistributedWorker -> Successfully loaded {len(layer_paths)} layers with weights",
                 "blue",
-                logging.INFO,
+                logging.DEBUG,
             ),
         )
 
@@ -893,7 +891,7 @@ class DistributedWorker:
             (
                 f"DistributedWorker -> Loading single module {module_class_name} from {model_name}",
                 "blue",
-                logging.INFO,
+                logging.DEBUG,
             ),
         )
 
@@ -903,7 +901,7 @@ class DistributedWorker:
                 (
                     f"DistributedWorker -> Parent module is entire model — loading full model.",
                     "blue",
-                    logging.INFO,
+                    logging.DEBUG,
                 ),
             )
 
@@ -942,7 +940,7 @@ class DistributedWorker:
             (
                 f"DistributedWorker -> Loading weights for {parent_module_path}",
                 "blue",
-                logging.INFO,
+                logging.DEBUG,
             ),
         )
 
@@ -982,7 +980,7 @@ class DistributedWorker:
             (
                 f"DistributedWorker -> Successfully loaded single module {module_class_name}",
                 "blue",
-                logging.INFO,
+                logging.DEBUG,
             ),
         )
         return target_module
@@ -1014,7 +1012,7 @@ class DistributedWorker:
                 (
                     f"DistributedWorker -> Loading full model {model_name} with type {model_type}",
                     "blue",
-                    logging.INFO,
+                    logging.DEBUG,
                 ),
             )
 
@@ -1051,7 +1049,7 @@ class DistributedWorker:
             (
                 f"DistributedWorker -> Successfully loaded full model {model_name}",
                 "blue",
-                logging.INFO,
+                logging.DEBUG,
             ),
         )
         return final_model
@@ -1092,7 +1090,7 @@ class DistributedWorker:
                 (
                     f"DistributedWorker -> Initialized optimizer: {optimizer_name} on {self.device.type}",
                     "bright_blue",
-                    logging.INFO,
+                    logging.DEBUG,
                 ),
             )
             self.send_request("optimizer_response", (module_id, "loaded"))
@@ -1112,7 +1110,7 @@ class DistributedWorker:
                 (
                     "DistributedWorker -> Optimizer stepped.",
                     "bright_blue",
-                    logging.INFO,
+                    logging.DEBUG,
                 ),
             )
             self.send_request("optimizer_response", (module_id, "stepped"))
@@ -1129,7 +1127,7 @@ class DistributedWorker:
 
             self.send_request(
                 "debug_print",
-                ("DistributedWorker -> Optimizer zeroed.", "bright_blue", logging.INFO),
+                ("DistributedWorker -> Optimizer zeroed.", "bright_blue", logging.DEBUG),
             )
             self.send_request("optimizer_response", (module_id, "zeroed"))
 
