@@ -121,18 +121,23 @@ def normalize_past_key_values(pkv):
 
 
 def _load_model_skeleton(model_name: str, module_id: str, model_type: str = "chat"):
-    """Load the HF model structure with empty weights"""
+    """
+    Load the HF model structure with empty weights.
+    """
+    # First, load the config
+    model_config = AutoConfig.from_pretrained(model_name)
+
+    # Then create model from config with init_empty_weights
     with init_empty_weights():
         if model_type in ("causal", "chat"):
-            skeleton_model = AutoModelForCausalLM.from_pretrained(model_name)
+            skeleton_model = AutoModelForCausalLM.from_config(model_config)
         elif model_type == "seq2seq":
-            skeleton_model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+            skeleton_model = AutoModelForSeq2SeqLM.from_config(model_config)
         elif model_type == "vision2text":
-            skeleton_model = AutoModelForVision2Seq.from_pretrained(model_name)
+            skeleton_model = AutoModelForVision2Seq.from_config(model_config)
         elif model_type == "audio2text":
-            skeleton_model = AutoModelForSpeechSeq2Seq.from_pretrained(model_name)
+            skeleton_model = AutoModelForSpeechSeq2Seq.from_config(model_config)
         else:
-            model_config = AutoConfig.from_pretrained(model_name)
             skeleton_model = AutoModel.from_config(model_config)
 
     skeleton_model.eval()  # Set to eval mode initially
@@ -712,7 +717,7 @@ class DistributedWorker:
 
         self.cleanup_memory()
 
-        self._move_layers_to_device_incrementally(grouped_module)
+        self._debug_move_to_device(grouped_module, device=self.device)
 
         self.send_request(
             "debug_print",
@@ -725,26 +730,28 @@ class DistributedWorker:
 
         return grouped_module
 
-    def _move_layers_to_device_incrementally(
-        self, module: torch.nn.Module
-    ) -> None:
+    def _debug_move_to_device(
+            self, module: torch.nn.Module, device: torch.device
+    ) -> torch.nn.Module:
         """
-        Move module to GPU layer-by-layer, deleting CPU copies as we go.
+        Move module to device with granular tracking to identify OOM source.
+        Moves each layer individually and tracks memory after each transfer.
         """
         self.send_request(
             "debug_print",
             (
-                f"Starting incremental move to {self.device}...",
+                f"Starting gradual move to {device}...",
                 "yellow",
                 logging.INFO,
             ),
         )
 
+        # Move each layer individually
         for idx, layer in enumerate(module.layers):
             self.send_request(
                 "debug_print",
                 (
-                    f"Moving layer {idx + 1}/{len(module.layers)} to {self.device}...",
+                    f"Moving layer {idx + 1}/{len(module.layers)} to {device}...",
                     "yellow",
                     logging.INFO,
                 ),
@@ -765,21 +772,13 @@ class DistributedWorker:
             self._debug_memory_state(f"Before layer {idx}")
 
             try:
-                # Move to GPU
-                module.layers[idx] = layer.to(self.device)
-
-                # CRITICAL: Delete the CPU reference explicitly
-                del layer
-
-                # Force cleanup to free CPU memory
-                self.cleanup_memory()
-
+                module.layers[idx] = layer.to(device)
                 torch.cuda.synchronize()  # Ensure transfer completes
 
                 # Memory after
                 self._debug_memory_state(f"After layer {idx}")
 
-            except torch.cuda.OutOfMemoryError as e:
+            except RuntimeError as e:
                 self.send_request(
                     "debug_print",
                     (
@@ -802,9 +801,73 @@ class DistributedWorker:
 
         for name, param in module.named_parameters():
             if not name.startswith('layers.'):
-                param.data = param.data.to(self.device)
+                self.send_request(
+                    "debug_print",
+                    (
+                        f"  Moving param: {name}, shape={list(param.shape)}, "
+                        f"size={param.numel() * param.element_size() / 1024 ** 2:.2f}MB",
+                        "cyan",
+                        logging.INFO,
+                    ),
+                )
 
-        self.cleanup_memory()
+        return module
+
+    def _debug_memory_state(self, label: str) -> None:
+        """Print current GPU memory state."""
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated(self.device) / 1024 ** 3
+            reserved = torch.cuda.memory_reserved(self.device) / 1024 ** 3
+            max_allocated = torch.cuda.max_memory_allocated(self.device) / 1024 ** 3
+
+            self.send_request(
+                "debug_print",
+                (
+                    f"GPU Memory [{label}]: "
+                    f"Allocated={allocated:.2f}GB, Reserved={reserved:.2f}GB, "
+                    f"Max={max_allocated:.2f}GB",
+                    "cyan",
+                    logging.INFO,
+                ),
+            )
+
+    def _debug_module_state(self, module: torch.nn.Module, label: str) -> None:
+        """Print module parameter statistics."""
+        total_params = 0
+        total_bytes = 0
+        params_by_dtype = {}
+
+        for name, param in module.named_parameters():
+            num_params = param.numel()
+            num_bytes = num_params * param.element_size()
+            total_params += num_params
+            total_bytes += num_bytes
+
+            dtype_str = str(param.dtype)
+            if dtype_str not in params_by_dtype:
+                params_by_dtype[dtype_str] = {'params': 0, 'bytes': 0}
+            params_by_dtype[dtype_str]['params'] += num_params
+            params_by_dtype[dtype_str]['bytes'] += num_bytes
+
+        self.send_request(
+            "debug_print",
+            (
+                f"Module [{label}]: "
+                f"Total params={total_params:,}, Size={total_bytes / 1024 ** 3:.2f}GB",
+                "cyan",
+                logging.INFO,
+            ),
+        )
+
+        for dtype, stats in params_by_dtype.items():
+            self.send_request(
+                "debug_print",
+                (
+                    f"  {dtype}: {stats['params']:,} params, {stats['bytes'] / 1024 ** 3:.2f}GB",
+                    "cyan",
+                    logging.INFO,
+                ),
+            )
 
     def _load_specific_layer_weights(
         self,
